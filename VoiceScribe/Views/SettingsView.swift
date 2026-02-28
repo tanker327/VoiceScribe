@@ -3,6 +3,9 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @State private var modelLoadError: String?
+    @State private var availableModels: [String] = []
+    @State private var isLoadingModels = false
+    @State private var modelCache: [AIProvider: [String]] = [:]
 
     var body: some View {
         TabView {
@@ -143,8 +146,9 @@ struct SettingsView: View {
         .padding()
         .onChange(of: appState.aiProvider) { _, newVal in
             appState.aiModel = newVal.defaultModel
-            appState.availableModels = []
             modelLoadError = nil
+            // Restore from cache if available, otherwise clear
+            availableModels = modelCache[newVal] ?? []
         }
     }
 
@@ -152,14 +156,14 @@ struct SettingsView: View {
 
     private var modelPickerSection: some View {
         Group {
-            if appState.availableModels.isEmpty {
+            if availableModels.isEmpty {
                 HStack {
                     Text("Model: \(appState.aiModel)")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button(action: loadModels) {
-                        if appState.isLoadingModels {
+                        if isLoadingModels {
                             ProgressView()
                                 .scaleEffect(0.6)
                                 .frame(width: 16, height: 16)
@@ -167,12 +171,12 @@ struct SettingsView: View {
                             Label("Load Models", systemImage: "arrow.clockwise")
                         }
                     }
-                    .disabled(appState.isLoadingModels)
+                    .disabled(isLoadingModels)
                     .font(.system(size: 11))
                 }
             } else {
                 Picker("Model", selection: $appState.aiModel) {
-                    ForEach(appState.availableModels, id: \.self) { modelId in
+                    ForEach(availableModels, id: \.self) { modelId in
                         Text(modelId).tag(modelId)
                     }
                 }
@@ -187,31 +191,28 @@ struct SettingsView: View {
     }
 
     private func loadModels() {
+        guard !isLoadingModels else { return }
+
         let provider = appState.aiProvider
-        let apiKey: String
-        switch provider {
-        case .claude: apiKey = appState.claudeAPIKey
-        case .openai: apiKey = appState.openAIAPIKey
-        case .xai:    apiKey = appState.xaiAPIKey
-        }
+        let apiKey = appState.currentAIApiKey
 
         modelLoadError = nil
-        appState.isLoadingModels = true
+        isLoadingModels = true
 
         Task {
             do {
                 let models = try await AIService.shared.fetchModels(provider: provider, apiKey: apiKey)
                 await MainActor.run {
-                    appState.availableModels = models
-                    appState.isLoadingModels = false
-                    // Keep current selection if it's in the list, otherwise pick first
+                    availableModels = models
+                    modelCache[provider] = models
+                    isLoadingModels = false
                     if !models.contains(appState.aiModel), let first = models.first {
                         appState.aiModel = first
                     }
                 }
             } catch {
                 await MainActor.run {
-                    appState.isLoadingModels = false
+                    isLoadingModels = false
                     modelLoadError = error.localizedDescription
                 }
             }

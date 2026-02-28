@@ -40,8 +40,15 @@ class AppState: ObservableObject {
     @Published var showingRefined = false
     @Published var history: [TranscriptionEntry] = []
     @Published var audioLevel: Float = 0.0
-    @Published var availableModels: [String] = []
-    @Published var isLoadingModels = false
+
+    /// Returns the API key for the currently selected AI provider
+    var currentAIApiKey: String {
+        switch aiProvider {
+        case .claude: return claudeAPIKey
+        case .openai: return openAIAPIKey
+        case .xai:    return xaiAPIKey
+        }
+    }
 }
 
 // MARK: - STT Provider
@@ -102,6 +109,13 @@ enum AIProvider: String, CaseIterable, Identifiable {
         }
     }
 
+    var baseURL: String {
+        switch self {
+        case .claude: return "https://api.anthropic.com"
+        case .openai: return "https://api.openai.com"
+        case .xai:    return "https://api.x.ai"
+        }
+    }
 }
 
 // MARK: - Refinement Mode

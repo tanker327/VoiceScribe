@@ -489,12 +489,7 @@ struct ContentView: View {
             prompt = appState.refinementMode.systemPrompt
         }
 
-        let apiKey: String
-        switch appState.aiProvider {
-        case .claude: apiKey = appState.claudeAPIKey
-        case .openai: apiKey = appState.openAIAPIKey
-        case .xai:    apiKey = appState.xaiAPIKey
-        }
+        let apiKey = appState.currentAIApiKey
 
         appState.isRefining = true
         appState.statusMessage = "Refining…"

@@ -10,27 +10,17 @@ class AIService {
     func fetchModels(provider: AIProvider, apiKey: String) async throws -> [String] {
         guard !apiKey.isEmpty else { throw AIError.missingAPIKey(provider.rawValue) }
 
-        let url: URL
-        var request: URLRequest
-
-        switch provider {
-        case .claude:
-            url = URL(string: "https://api.anthropic.com/v1/models")!
-            request = URLRequest(url: url)
-            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        case .openai:
-            url = URL(string: "https://api.openai.com/v1/models")!
-            request = URLRequest(url: url)
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        case .xai:
-            url = URL(string: "https://api.x.ai/v1/models")!
-            request = URLRequest(url: url)
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        }
-
+        let url = URL(string: "\(provider.baseURL)/v1/models")!
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 15
+
+        if provider == .claude {
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        } else {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
 
         print("[AIService] Fetching models from \(provider.rawValue)...")
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -46,7 +36,14 @@ class AIService {
             throw AIError.parseError(provider.rawValue)
         }
 
-        let modelIds = models.compactMap { $0["id"] as? String }.sorted()
+        var modelIds = models.compactMap { $0["id"] as? String }
+
+        // OpenAI returns all models (embeddings, TTS, DALL-E, etc.) — filter to chat-capable ones
+        if provider == .openai {
+            modelIds = modelIds.filter { $0.hasPrefix("gpt-") || $0.hasPrefix("o1") || $0.hasPrefix("o3") || $0.hasPrefix("o4") }
+        }
+
+        modelIds.sort()
         print("[AIService] Loaded \(modelIds.count) models from \(provider.rawValue)")
         return modelIds
     }
@@ -60,16 +57,15 @@ class AIService {
         apiKey: String,
         model: String? = nil
     ) async throws -> String {
+        let resolvedModel = model ?? provider.defaultModel
         switch provider {
         case .claude:
             return try await refineClaude(text: text, systemPrompt: systemPrompt,
-                                          apiKey: apiKey, model: model ?? provider.defaultModel)
-        case .openai:
-            return try await refineOpenAI(text: text, systemPrompt: systemPrompt,
-                                          apiKey: apiKey, model: model ?? provider.defaultModel)
-        case .xai:
-            return try await refineXAI(text: text, systemPrompt: systemPrompt,
-                                       apiKey: apiKey, model: model ?? provider.defaultModel)
+                                          apiKey: apiKey, model: resolvedModel)
+        case .openai, .xai:
+            return try await refineOpenAICompatible(
+                text: text, systemPrompt: systemPrompt, apiKey: apiKey,
+                model: resolvedModel, provider: provider)
         }
     }
 
@@ -115,12 +111,16 @@ class AIService {
         return resultText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - OpenAI
+    // MARK: - OpenAI-Compatible (OpenAI, xAI)
 
-    private func refineOpenAI(text: String, systemPrompt: String, apiKey: String, model: String) async throws -> String {
-        guard !apiKey.isEmpty else { throw AIError.missingAPIKey("OpenAI") }
+    private func refineOpenAICompatible(
+        text: String, systemPrompt: String, apiKey: String,
+        model: String, provider: AIProvider
+    ) async throws -> String {
+        let providerName = provider.rawValue
+        guard !apiKey.isEmpty else { throw AIError.missingAPIKey(providerName) }
 
-        let url = URL(string: "https://api.openai.com/v1/chat/completions")!
+        let url = URL(string: "\(provider.baseURL)/v1/chat/completions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -138,12 +138,13 @@ class AIService {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        print("[AIService] Sending refinement request to \(providerName) (model: \(model))")
         let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let errBody = String(data: data, encoding: .utf8) ?? "Unknown"
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw AIError.apiError(provider: "OpenAI", statusCode: code, message: errBody)
+            throw AIError.apiError(provider: providerName, statusCode: code, message: errBody)
         }
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -151,54 +152,10 @@ class AIService {
               let first = choices.first,
               let message = first["message"] as? [String: Any],
               let resultText = message["content"] as? String else {
-            throw AIError.parseError("OpenAI")
+            throw AIError.parseError(providerName)
         }
 
-        return resultText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    // MARK: - xAI (Grok)
-
-    private func refineXAI(text: String, systemPrompt: String, apiKey: String, model: String) async throws -> String {
-        guard !apiKey.isEmpty else { throw AIError.missingAPIKey("xAI") }
-
-        let url = URL(string: "https://api.x.ai/v1/chat/completions")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 60
-
-        let body: [String: Any] = [
-            "model": model,
-            "messages": [
-                ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": text]
-            ],
-            "temperature": 0.3
-        ]
-
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        print("[AIService] Sending refinement request to xAI (model: \(model))")
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            let errBody = String(data: data, encoding: .utf8) ?? "Unknown"
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            print("[AIService] xAI API error (\(code)): \(errBody)")
-            throw AIError.apiError(provider: "xAI", statusCode: code, message: errBody)
-        }
-
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let first = choices.first,
-              let message = first["message"] as? [String: Any],
-              let resultText = message["content"] as? String else {
-            throw AIError.parseError("xAI")
-        }
-
-        print("[AIService] xAI refinement complete")
+        print("[AIService] \(providerName) refinement complete")
         return resultText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
