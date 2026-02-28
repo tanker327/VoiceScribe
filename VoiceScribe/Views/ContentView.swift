@@ -1,4 +1,6 @@
 import SwiftUI
+import STTextViewSwiftUI
+import STTextViewSwiftUICommon
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
@@ -8,6 +10,7 @@ struct ContentView: View {
     @State private var showCopiedToast = false
     @State private var errorMessage: String?
     @State private var showError = false
+    @State private var alwaysOnTop = false
 
     var body: some View {
         HSplitView {
@@ -185,10 +188,7 @@ struct ContentView: View {
             .padding(.vertical, 5)
             .background(Color.accentColor.opacity(0.07))
 
-            TextEditor(text: $appState.refinedText)
-                .font(.system(size: CGFloat(appState.fontSize)))
-                .scrollContentBackground(.hidden)
-                .padding(8)
+            StyledTextView(text: $appState.refinedText, fontSize: appState.fontSize)
         }
     }
 
@@ -209,10 +209,7 @@ struct ContentView: View {
                 .background(Color(nsColor: .controlBackgroundColor).opacity(0.25))
             }
 
-            TextEditor(text: $appState.transcribedText)
-                .font(.system(size: CGFloat(appState.fontSize)))
-                .scrollContentBackground(.hidden)
-                .padding(8)
+            StyledTextView(text: $appState.transcribedText, fontSize: appState.fontSize)
         }
     }
 
@@ -306,6 +303,14 @@ struct ContentView: View {
 
             Spacer()
 
+            Button {
+                alwaysOnTop.toggle()
+                setWindowFloating(alwaysOnTop)
+            } label: {
+                Image(systemName: alwaysOnTop ? "pin.fill" : "pin")
+            }
+            .help(alwaysOnTop ? "Disable always on top" : "Keep window on top")
+
             Button { appState.fontSize = max(10, appState.fontSize - 1) } label: {
                 Image(systemName: "textformat.size.smaller")
             }
@@ -314,6 +319,11 @@ struct ContentView: View {
                 Image(systemName: "textformat.size.larger")
             }
         }
+    }
+
+    private func setWindowFloating(_ floating: Bool) {
+        guard let window = NSApplication.shared.windows.first(where: { $0.isKeyWindow }) else { return }
+        window.level = floating ? .floating : .normal
     }
 
     // MARK: - History Sidebar
@@ -547,5 +557,39 @@ struct ContentView: View {
     private func showErrorAlert(_ message: String) {
         errorMessage = message
         showError = true
+    }
+}
+
+// MARK: - Styled Text View (STTextView wrapper)
+
+/// Bridges between AppState's String bindings and STTextView's AttributedString API.
+struct StyledTextView: View {
+    @Binding var text: String
+    var fontSize: Double
+
+    @State private var attributedText = AttributedString()
+    @State private var selection: NSRange?
+
+    var body: some View {
+        TextView(
+            text: $attributedText,
+            selection: $selection,
+            options: [.wrapLines, .highlightSelectedLine]
+        )
+        .textViewFont(.systemFont(ofSize: CGFloat(fontSize)))
+        .onAppear {
+            attributedText = AttributedString(text)
+        }
+        .onChange(of: text) { _, newValue in
+            if String(attributedText.characters) != newValue {
+                attributedText = AttributedString(newValue)
+            }
+        }
+        .onChange(of: attributedText) { _, newValue in
+            let plain = String(newValue.characters)
+            if text != plain {
+                text = plain
+            }
+        }
     }
 }

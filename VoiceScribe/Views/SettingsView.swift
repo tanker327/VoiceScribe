@@ -9,16 +9,48 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
+            apiKeysTab
+                .tabItem { Label("API Keys", systemImage: "key") }
+
             sttTab
                 .tabItem { Label("Transcription", systemImage: "mic") }
 
-            aiTab
-                .tabItem { Label("AI Refinement", systemImage: "brain") }
-
-            generalTab
-                .tabItem { Label("General", systemImage: "gear") }
+            aiAndGeneralTab
+                .tabItem { Label("AI & General", systemImage: "brain") }
         }
-        .frame(width: 520, height: 420)
+        .frame(width: 520, height: 480)
+    }
+
+    // MARK: - API Keys Tab
+
+    private var apiKeysTab: some View {
+        Form {
+            Section("OpenAI") {
+                SecureField("sk-...", text: $appState.openAIAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                Text("Used for Whisper/GPT-4o transcription and OpenAI refinement.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Claude (Anthropic)") {
+                SecureField("sk-ant-...", text: $appState.claudeAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                Text("Used for Claude AI refinement.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("xAI (Grok)") {
+                SecureField("xai-...", text: $appState.xaiAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                Text("Used for Grok AI refinement.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
     }
 
     // MARK: - Speech-to-Text Tab
@@ -28,8 +60,13 @@ struct SettingsView: View {
             Section("Speech-to-Text Provider") {
                 Picker("Provider", selection: $appState.sttProvider) {
                     ForEach(STTProvider.allCases) { provider in
-                        VStack(alignment: .leading) {
+                        HStack {
                             Text(provider.rawValue)
+                            if provider.requiresOpenAIKey && appState.openAIAPIKey.isEmpty {
+                                Text("(No API key)")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.red)
+                            }
                         }
                         .tag(provider)
                     }
@@ -37,14 +74,6 @@ struct SettingsView: View {
                 .pickerStyle(.radioGroup)
 
                 Text(appState.sttProvider.description)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("OpenAI API Key") {
-                SecureField("sk-...", text: $appState.openAIAPIKey)
-                    .textFieldStyle(.roundedBorder)
-                Text("Required for OpenAI Whisper and GPT-4o Transcribe.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -93,53 +122,64 @@ struct SettingsView: View {
         .padding()
     }
 
-    // MARK: - AI Refinement Tab
+    // MARK: - AI & General Tab
 
-    private var aiTab: some View {
+    private var aiAndGeneralTab: some View {
         Form {
-            Section("AI Provider for Refinement") {
+            Section("AI Refinement") {
                 Picker("Provider", selection: $appState.aiProvider) {
                     ForEach(AIProvider.allCases) { provider in
-                        Text(provider.rawValue).tag(provider)
+                        if appState.hasAPIKey(for: provider) {
+                            Text(provider.rawValue).tag(provider)
+                        } else {
+                            Text("\(provider.rawValue) (No API key)")
+                                .tag(provider)
+                        }
                     }
                 }
-                .pickerStyle(.radioGroup)
-            }
 
-            if appState.aiProvider == .claude {
-                Section("Anthropic (Claude)") {
-                    SecureField("Claude API Key", text: $appState.claudeAPIKey)
-                        .textFieldStyle(.roundedBorder)
+                modelPickerSection
 
-                    modelPickerSection
-                }
-            }
-
-            if appState.aiProvider == .openai {
-                Section("OpenAI") {
-                    Text("Uses the same API key from the Transcription tab.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-
-                    modelPickerSection
-                }
-            }
-
-            if appState.aiProvider == .xai {
-                Section("xAI (Grok)") {
-                    SecureField("xAI API Key", text: $appState.xaiAPIKey)
-                        .textFieldStyle(.roundedBorder)
-
-                    modelPickerSection
-                }
-            }
-
-            Section("Default Refinement Mode") {
                 Picker("Mode", selection: $appState.refinementMode) {
                     ForEach(RefinementMode.allCases) { mode in
                         Label(mode.rawValue, systemImage: mode.icon).tag(mode)
                     }
                 }
+            }
+
+            Section("Editor") {
+                HStack {
+                    Text("Font size")
+                    Slider(value: $appState.fontSize, in: 10...24, step: 1)
+                    Text("\(Int(appState.fontSize)) pt")
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(width: 40)
+                }
+            }
+
+            Section("Automation") {
+                Toggle("Auto-refine after recording stops", isOn: $appState.autoRefineOnStop)
+                Toggle("Auto-copy refined text to clipboard", isOn: $appState.autoCopyOnRefine)
+            }
+
+            Section("Keyboard Shortcuts") {
+                shortcutRow("⌥R", "Start / Stop recording")
+                shortcutRow("⌥E", "Refine transcription")
+                shortcutRow("⌥C", "Copy current text")
+                shortcutRow("⌘⌫", "Clear editor")
+            }
+
+            Section("About") {
+                HStack {
+                    Text("VoiceScribe")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("v1.0")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Text("Speech-to-text with AI refinement for macOS.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -147,7 +187,6 @@ struct SettingsView: View {
         .onChange(of: appState.aiProvider) { _, newVal in
             appState.aiModel = newVal.defaultModel
             modelLoadError = nil
-            // Restore from cache if available, otherwise clear
             availableModels = modelCache[newVal] ?? []
         }
     }
@@ -219,48 +258,7 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - General Tab
-
-    private var generalTab: some View {
-        Form {
-            Section("Editor") {
-                HStack {
-                    Text("Font size")
-                    Slider(value: $appState.fontSize, in: 10...24, step: 1)
-                    Text("\(Int(appState.fontSize)) pt")
-                        .font(.system(size: 11, design: .monospaced))
-                        .frame(width: 40)
-                }
-            }
-
-            Section("Automation") {
-                Toggle("Auto-refine after recording stops", isOn: $appState.autoRefineOnStop)
-                Toggle("Auto-copy refined text to clipboard", isOn: $appState.autoCopyOnRefine)
-            }
-
-            Section("Keyboard Shortcuts") {
-                shortcutRow("⌥R", "Start / Stop recording")
-                shortcutRow("⌥E", "Refine transcription")
-                shortcutRow("⌥C", "Copy current text")
-                shortcutRow("⌘⌫", "Clear editor")
-            }
-
-            Section("About") {
-                HStack {
-                    Text("VoiceScribe")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("v1.0")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                Text("Speech-to-text with AI refinement for macOS.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
-    }
+    // MARK: - Helpers
 
     private func shortcutRow(_ key: String, _ desc: String) -> some View {
         HStack {

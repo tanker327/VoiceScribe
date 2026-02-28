@@ -49,6 +49,15 @@ class AppState: ObservableObject {
         case .xai:    return xaiAPIKey
         }
     }
+
+    /// Check if a given AI provider has an API key configured
+    func hasAPIKey(for provider: AIProvider) -> Bool {
+        switch provider {
+        case .claude: return !claudeAPIKey.isEmpty
+        case .openai: return !openAIAPIKey.isEmpty
+        case .xai:    return !xaiAPIKey.isEmpty
+        }
+    }
 }
 
 // MARK: - STT Provider

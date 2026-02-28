@@ -65,15 +65,16 @@ class AudioRecorderService: ObservableObject {
             if error == nil, convertedBuffer.frameLength > 0 {
                 try? audioFile.write(from: convertedBuffer)
 
-                // Compute audio level for UI
+                // Compute audio level (RMS) for UI
                 let channelData = convertedBuffer.floatChannelData?[0]
                 let length = Int(convertedBuffer.frameLength)
                 if let data = channelData, length > 0 {
-                    var sum: Float = 0
-                    for i in 0..<length { sum += abs(data[i]) }
-                    let avg = sum / Float(length)
+                    var sumOfSquares: Float = 0
+                    for i in 0..<length { sumOfSquares += data[i] * data[i] }
+                    let rms = sqrtf(sumOfSquares / Float(length))
                     DispatchQueue.main.async {
-                        self.audioLevel = avg
+                        // Smooth the level to avoid jitter
+                        self.audioLevel = self.audioLevel * 0.3 + rms * 0.7
                     }
                 }
             }
