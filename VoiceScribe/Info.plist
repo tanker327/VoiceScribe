@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>VoiceScribe needs access to your microphone to record audio for speech-to-text transcription.</string>
+    <key>CFBundleName</key>
+    <string>VoiceScribe</string>
+    <key>CFBundleDisplayName</key>
+    <string>VoiceScribe</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.voicescribe.app</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+</dict>
+</plist>
