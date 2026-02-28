@@ -98,7 +98,7 @@ struct ContentView: View {
                 RoundedRectangle(cornerRadius: 1)
                     .fill(barColor(for: i))
                     .frame(width: 3, height: 10)
-                    .opacity(Float(i) / 12.0 < recorder.audioLevel * 8 ? 1 : 0.15)
+                    .opacity(Float(i) / 12.0 < recorder.audioLevel * 50 ? 1 : 0.15)
             }
         }
     }
@@ -489,7 +489,12 @@ struct ContentView: View {
             prompt = appState.refinementMode.systemPrompt
         }
 
-        let apiKey = appState.aiProvider == .claude ? appState.claudeAPIKey : appState.openAIAPIKey
+        let apiKey: String
+        switch appState.aiProvider {
+        case .claude: apiKey = appState.claudeAPIKey
+        case .openai: apiKey = appState.openAIAPIKey
+        case .xai:    apiKey = appState.xaiAPIKey
+        }
 
         appState.isRefining = true
         appState.statusMessage = "Refining…"

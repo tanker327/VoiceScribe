@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
+    @State private var modelLoadError: String?
 
     var body: some View {
         TabView {
@@ -107,20 +108,7 @@ struct SettingsView: View {
                     SecureField("Claude API Key", text: $appState.claudeAPIKey)
                         .textFieldStyle(.roundedBorder)
 
-                    TextField("Model", text: $appState.aiModel)
-                        .textFieldStyle(.roundedBorder)
-
-                    HStack {
-                        Text("Suggested models:")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Button("Sonnet 4") { appState.aiModel = "claude-sonnet-4-20250514" }
-                            .buttonStyle(.link)
-                            .font(.system(size: 11))
-                        Button("Haiku 3.5") { appState.aiModel = "claude-3-5-haiku-20241022" }
-                            .buttonStyle(.link)
-                            .font(.system(size: 11))
-                    }
+                    modelPickerSection
                 }
             }
 
@@ -130,20 +118,16 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
 
-                    TextField("Model", text: $appState.aiModel)
+                    modelPickerSection
+                }
+            }
+
+            if appState.aiProvider == .xai {
+                Section("xAI (Grok)") {
+                    SecureField("xAI API Key", text: $appState.xaiAPIKey)
                         .textFieldStyle(.roundedBorder)
 
-                    HStack {
-                        Text("Suggested:")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Button("GPT-4o") { appState.aiModel = "gpt-4o" }
-                            .buttonStyle(.link)
-                            .font(.system(size: 11))
-                        Button("GPT-4o Mini") { appState.aiModel = "gpt-4o-mini" }
-                            .buttonStyle(.link)
-                            .font(.system(size: 11))
-                    }
+                    modelPickerSection
                 }
             }
 
@@ -159,6 +143,78 @@ struct SettingsView: View {
         .padding()
         .onChange(of: appState.aiProvider) { _, newVal in
             appState.aiModel = newVal.defaultModel
+            appState.availableModels = []
+            modelLoadError = nil
+        }
+    }
+
+    // MARK: - Model Picker
+
+    private var modelPickerSection: some View {
+        Group {
+            if appState.availableModels.isEmpty {
+                HStack {
+                    Text("Model: \(appState.aiModel)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(action: loadModels) {
+                        if appState.isLoadingModels {
+                            ProgressView()
+                                .scaleEffect(0.6)
+                                .frame(width: 16, height: 16)
+                        } else {
+                            Label("Load Models", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(appState.isLoadingModels)
+                    .font(.system(size: 11))
+                }
+            } else {
+                Picker("Model", selection: $appState.aiModel) {
+                    ForEach(appState.availableModels, id: \.self) { modelId in
+                        Text(modelId).tag(modelId)
+                    }
+                }
+            }
+
+            if let error = modelLoadError {
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func loadModels() {
+        let provider = appState.aiProvider
+        let apiKey: String
+        switch provider {
+        case .claude: apiKey = appState.claudeAPIKey
+        case .openai: apiKey = appState.openAIAPIKey
+        case .xai:    apiKey = appState.xaiAPIKey
+        }
+
+        modelLoadError = nil
+        appState.isLoadingModels = true
+
+        Task {
+            do {
+                let models = try await AIService.shared.fetchModels(provider: provider, apiKey: apiKey)
+                await MainActor.run {
+                    appState.availableModels = models
+                    appState.isLoadingModels = false
+                    // Keep current selection if it's in the list, otherwise pick first
+                    if !models.contains(appState.aiModel), let first = models.first {
+                        appState.aiModel = first
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    appState.isLoadingModels = false
+                    modelLoadError = error.localizedDescription
+                }
+            }
         }
     }
 

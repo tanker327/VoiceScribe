@@ -21,6 +21,7 @@ class AppState: ObservableObject {
     // --- AI Refinement Settings ---
     @AppStorage("aiProvider")        var aiProvider: AIProvider = .claude
     @AppStorage("claudeAPIKey")      var claudeAPIKey: String = ""
+    @AppStorage("xaiAPIKey")         var xaiAPIKey: String = ""
     @AppStorage("aiModel")           var aiModel: String = "claude-sonnet-4-20250514"
     @AppStorage("refinementMode")    var refinementMode: RefinementMode = .cleanup
 
@@ -39,6 +40,8 @@ class AppState: ObservableObject {
     @Published var showingRefined = false
     @Published var history: [TranscriptionEntry] = []
     @Published var audioLevel: Float = 0.0
+    @Published var availableModels: [String] = []
+    @Published var isLoadingModels = false
 }
 
 // MARK: - STT Provider
@@ -87,6 +90,7 @@ enum STTProvider: String, CaseIterable, Identifiable {
 enum AIProvider: String, CaseIterable, Identifiable {
     case claude = "Claude (Anthropic)"
     case openai = "OpenAI"
+    case xai   = "xAI (Grok)"
 
     var id: String { rawValue }
 
@@ -94,8 +98,10 @@ enum AIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .claude: return "claude-sonnet-4-20250514"
         case .openai: return "gpt-4o"
+        case .xai:    return "grok-3-mini"
         }
     }
+
 }
 
 // MARK: - Refinement Mode
