@@ -32,6 +32,9 @@ class AppState: ObservableObject {
     @AppStorage("autoCopyOnTranscribe")  var autoCopyOnTranscribe: Bool = true
     @AppStorage("autoCopyOnRefine")      var autoCopyOnRefine: Bool = true
 
+    /// Appearance: "system", "light", or "dark"
+    @AppStorage("appAppearance")     var appAppearance: String = "system"
+
     // --- Runtime State ---
     @Published var isRecording = false
     @Published var isRefining = false

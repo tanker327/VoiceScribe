@@ -11,8 +11,6 @@ struct ContentView: View {
     @State private var alwaysOnTop = false
     @State private var isAppendMode = false
     @State private var currentHistoryEntryID: UUID?
-    @State private var isLongPressing = false
-    @State private var pressStartTime: Date?
     @State private var spaceKeyMonitor: Any?
     @State private var mouseMonitor: Any?
 
@@ -30,6 +28,7 @@ struct ContentView: View {
         .onAppear {
             installSpaceKeyMonitor()
             installMouseMonitor()
+            applyAppearance()
             // Resign first responder so the editor doesn't auto-focus on launch
             DispatchQueue.main.async {
                 NSApp.keyWindow?.makeFirstResponder(nil)
@@ -57,8 +56,10 @@ struct ContentView: View {
         VStack(spacing: 0) {
             statusBar
             Divider()
-            controlsBar
-            Divider()
+            if appState.refinementMode == .custom {
+                controlsBar
+                Divider()
+            }
             editorArea
             Divider()
             actionBar
@@ -102,6 +103,13 @@ struct ContentView: View {
                 .background(Color.accentColor.opacity(0.12))
                 .cornerRadius(4)
 
+            Text(appState.aiProvider.rawValue)
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.purple.opacity(0.12))
+                .cornerRadius(4)
+
             Text("\(wordCount) words · \(charCount) chars")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.tertiary)
@@ -128,40 +136,20 @@ struct ContentView: View {
         return .red
     }
 
-    // MARK: - Controls Bar
+    // MARK: - Custom Prompt Bar
 
     private var controlsBar: some View {
-        HStack(spacing: 10) {
-            // Refinement mode
-            Picker("", selection: $appState.refinementMode) {
-                ForEach(RefinementMode.allCases) { mode in
-                    Label(mode.rawValue, systemImage: mode.icon).tag(mode)
-                }
-            }
-            .pickerStyle(.menu)
-            .frame(maxWidth: 200)
-            .help("AI refinement mode")
-
-            if appState.refinementMode == .custom {
-                TextField("Custom prompt…", text: $customPrompt)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
-            }
-
-            Spacer()
-
-            // AI provider badge
-            HStack(spacing: 4) {
-                Image(systemName: "brain")
-                    .font(.system(size: 10))
-                Text(appState.aiProvider.rawValue)
-                    .font(.system(size: 10))
-            }
-            .foregroundStyle(.secondary)
+        HStack {
+            Image(systemName: "terminal")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            TextField("Custom prompt…", text: $customPrompt)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12))
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 7)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .padding(.vertical, 5)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.3))
     }
 
     // MARK: - Editor Area
@@ -263,58 +251,73 @@ struct ContentView: View {
 
     private var actionBar: some View {
         HStack(spacing: 10) {
-            // Record / Stop / Abort
-            recordButton(
-                isActive: appState.isRecording && !isAppendMode,
-                label: "Record",
-                icon: "mic.fill",
-                tint: .accentColor,
-                tapAction: toggleRecording,
-                disabled: appState.isTranscribing || (appState.isRecording && isAppendMode)
-            )
-            .keyboardShortcut("r", modifiers: .option)
+            if appState.isRecording {
+                // Recording phase: Stop + Abort
+                Button(action: toggleRecording) {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .controlSize(.large)
+                .keyboardShortcut("r", modifiers: .option)
 
-            // Append / Stop / Abort
-            recordButton(
-                isActive: appState.isRecording && isAppendMode,
-                label: "Append",
-                icon: "plus.circle.fill",
-                tint: .orange,
-                tapAction: toggleAppendRecording,
-                disabled: appState.isTranscribing || (appState.isRecording && !isAppendMode)
-            )
-            .keyboardShortcut("a", modifiers: .option)
+                Button(action: abortRecording) {
+                    Label("Abort", systemImage: "xmark.circle.fill")
+                }
+                .controlSize(.large)
+                .tint(.gray)
 
-            // Refine
-            Button(action: refineText) {
-                Label("Refine", systemImage: "sparkles")
-                    .fontWeight(.medium)
+                Spacer()
+            } else if hasContent || appState.isTranscribing {
+                // Post-transcription phase: Record, Append, Refine, Copy, Clear
+                Button(action: toggleRecording) {
+                    Label("Record", systemImage: "mic.fill")
+                }
+                .controlSize(.large)
+                .keyboardShortcut("r", modifiers: .option)
+                .disabled(appState.isTranscribing || appState.isRefining)
+
+                Button(action: toggleAppendRecording) {
+                    Label("Append", systemImage: "plus.circle.fill")
+                }
+                .controlSize(.large)
+                .tint(.orange)
+                .keyboardShortcut("a", modifiers: .option)
+                .disabled(appState.isTranscribing || appState.isRefining)
+
+                refineButton
+
+                Spacer()
+
+                Button(action: copyToClipboard) {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .keyboardShortcut("c", modifiers: .option)
+                .controlSize(.large)
+                .disabled(currentText.isEmpty)
+
+                Button(action: clearAll) {
+                    Label("Clear", systemImage: "trash")
+                }
+                .keyboardShortcut(.delete, modifiers: .command)
+                .controlSize(.large)
+            } else {
+                // Initial phase: Record only
+                Button(action: toggleRecording) {
+                    Label("Record", systemImage: "mic.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut("r", modifiers: .option)
+
+                Spacer()
             }
-            .keyboardShortcut("e", modifiers: .option)
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
-            .disabled(appState.transcribedText.isEmpty || appState.isRefining || appState.isRecording)
-
-            Spacer()
-
-            // Copy
-            Button(action: copyToClipboard) {
-                Label("Copy", systemImage: "doc.on.doc")
-            }
-            .keyboardShortcut("c", modifiers: .option)
-            .controlSize(.large)
-            .disabled(currentText.isEmpty)
-
-            // Clear
-            Button(action: clearAll) {
-                Label("Clear", systemImage: "trash")
-            }
-            .keyboardShortcut(.delete, modifiers: .command)
-            .controlSize(.large)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .background(Color(nsColor: .controlBackgroundColor))
+        .animation(.easeInOut(duration: 0.15), value: appState.isRecording)
+        .animation(.easeInOut(duration: 0.15), value: hasContent)
     }
 
     // MARK: - Toolbar
@@ -337,6 +340,13 @@ struct ContentView: View {
             }
             .help(alwaysOnTop ? "Disable always on top" : "Keep window on top")
 
+            Button {
+                cycleAppearance()
+            } label: {
+                Image(systemName: appearanceIcon)
+            }
+            .help("Appearance: \(appState.appAppearance.capitalized)")
+
             Button { appState.fontSize = max(10, appState.fontSize - 1) } label: {
                 Image(systemName: "textformat.size.smaller")
             }
@@ -350,6 +360,32 @@ struct ContentView: View {
     private func setWindowFloating(_ floating: Bool) {
         guard let window = NSApplication.shared.windows.first(where: { $0.isKeyWindow }) else { return }
         window.level = floating ? .floating : .normal
+    }
+
+    private var appearanceIcon: String {
+        switch appState.appAppearance {
+        case "light": return "sun.max.fill"
+        case "dark":  return "moon.fill"
+        default:      return "circle.lefthalf.filled"
+        }
+    }
+
+    private func cycleAppearance() {
+        switch appState.appAppearance {
+        case "system": appState.appAppearance = "light"
+        case "light":  appState.appAppearance = "dark"
+        case "dark":   appState.appAppearance = "system"
+        default:       appState.appAppearance = "system"
+        }
+        applyAppearance()
+    }
+
+    private func applyAppearance() {
+        switch appState.appAppearance {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark":  NSApp.appearance = NSAppearance(named: .darkAqua)
+        default:      NSApp.appearance = nil  // follow system
+        }
     }
 
     // MARK: - History Sidebar
@@ -435,12 +471,14 @@ struct ContentView: View {
         currentText.count
     }
 
+    private var hasContent: Bool {
+        !appState.transcribedText.isEmpty || !appState.refinedText.isEmpty
+    }
+
     // MARK: - Actions
 
     private func toggleRecording() {
         if appState.isRecording {
-            isLongPressing = false
-            pressStartTime = nil
             stopAndTranscribe()
         } else {
             isAppendMode = false
@@ -450,8 +488,6 @@ struct ContentView: View {
 
     private func toggleAppendRecording() {
         if appState.isRecording {
-            isLongPressing = false
-            pressStartTime = nil
             stopAndTranscribe()
         } else {
             isAppendMode = true
@@ -632,71 +668,54 @@ struct ContentView: View {
         showError = true
     }
 
-    // MARK: - Record Button (with long-press abort)
+    // MARK: - Refine Button (with mode picker)
 
-    private func recordButton(
-        isActive: Bool,
-        label: String,
-        icon: String,
-        tint: Color,
-        tapAction: @escaping () -> Void,
-        disabled: Bool
-    ) -> some View {
-        let buttonLabel: String
-        let buttonIcon: String
-        let buttonTint: Color
+    private var refineButton: some View {
+        let disabled = appState.transcribedText.isEmpty || appState.isRefining || appState.isRecording
 
-        if isActive && isLongPressing {
-            buttonLabel = "Abort"
-            buttonIcon = "xmark.circle.fill"
-            buttonTint = .gray
-        } else if isActive {
-            buttonLabel = "Stop"
-            buttonIcon = "stop.fill"
-            buttonTint = .red
-        } else {
-            buttonLabel = label
-            buttonIcon = icon
-            buttonTint = tint
+        return HStack(spacing: 0) {
+            // Refine action
+            Button(action: refineText) {
+                Label("Refine", systemImage: "sparkles")
+                    .fontWeight(.medium)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("e", modifiers: .option)
+
+            Divider()
+                .frame(height: 16)
+                .opacity(0.4)
+
+            // Mode picker chevron
+            Menu {
+                ForEach(RefinementMode.allCases) { mode in
+                    Button {
+                        appState.refinementMode = mode
+                    } label: {
+                        if mode == appState.refinementMode {
+                            Label(mode.rawValue, systemImage: "checkmark")
+                        } else {
+                            Label(mode.rawValue, systemImage: mode.icon)
+                        }
+                    }
+                }
+            } label: {
+                Color.clear.frame(width: 1, height: 1)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .frame(width: 16)
         }
-
-        return Label(buttonLabel, systemImage: buttonIcon)
-            .fontWeight(.medium)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(buttonTint.opacity(isLongPressing ? 0.15 : 0.0))
-            )
-            .foregroundStyle(disabled ? .secondary : buttonTint)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        guard !disabled, isActive, pressStartTime == nil else { return }
-                        pressStartTime = Date()
-                        // Schedule the visual transition to "Abort" after 2 seconds
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                            guard pressStartTime != nil else { return }
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                isLongPressing = true
-                            }
-                        }
-                    }
-                    .onEnded { _ in
-                        guard !disabled else { return }
-                        let held = pressStartTime.map { Date().timeIntervalSince($0) } ?? 0
-                        pressStartTime = nil
-
-                        if isActive && held >= 2.0 {
-                            abortRecording()
-                        } else if !isLongPressing {
-                            tapAction()
-                        }
-                        isLongPressing = false
-                    }
-            )
-            .opacity(disabled ? 0.4 : 1.0)
+        .foregroundColor(disabled ? .secondary : .white)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(disabled ? Color.accentColor.opacity(0.3) : Color.accentColor)
+        )
+        .help(appState.refinementMode.rawValue)
+        .allowsHitTesting(!disabled)
+        .opacity(disabled ? 0.6 : 1.0)
     }
 
     private func abortRecording() {
@@ -705,8 +724,10 @@ struct ContentView: View {
         appState.isRecording = false
         appState.statusMessage = "Recording aborted"
         isAppendMode = false
-        isLongPressing = false
-        pressStartTime = nil
+        appState.transcribedText = ""
+        appState.refinedText = ""
+        appState.showingRefined = false
+        currentHistoryEntryID = nil
     }
 
     // MARK: - Editor Field
