@@ -447,12 +447,12 @@ struct ContentView: View {
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Text(entry.mode)
-                                .font(.system(size: 9))
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Color.accentColor.opacity(0.1))
-                                .cornerRadius(3)
+//                            Text(entry.mode)
+//                                .font(.system(size: 9))
+//                                .padding(.horizontal, 4)
+//                                .padding(.vertical, 1)
+//                                .background(Color.accentColor.opacity(0.1))
+//                                .cornerRadius(3)
                         }
                     }
                     .padding(.vertical, 3)
@@ -461,6 +461,22 @@ struct ContentView: View {
                         appState.transcribedText = entry.rawText
                         appState.refinedText = entry.refinedText ?? ""
                         appState.showingRefined = entry.refinedText != nil
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        Button {
+                            withAnimation {
+                                appState.history.removeAll { $0.id == entry.id }
+                            }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 16, height: 16)
+                                .background(Color(nsColor: .controlBackgroundColor))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Delete")
                     }
                 }
                 .listStyle(.sidebar)
