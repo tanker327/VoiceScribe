@@ -367,6 +367,11 @@ struct ContentView: View {
             Button { appState.fontSize = min(24, appState.fontSize + 1) } label: {
                 Image(systemName: "textformat.size.larger")
             }
+
+            SettingsLink {
+                Image(systemName: "gearshape")
+            }
+            .help("Settings")
         }
     }
 

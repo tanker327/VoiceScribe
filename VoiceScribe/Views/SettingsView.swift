@@ -27,24 +27,21 @@ struct SettingsView: View {
     private var apiKeysTab: some View {
         Form {
             Section("OpenAI") {
-                SecureField("sk-...", text: $appState.openAIAPIKey)
-                    .textFieldStyle(.roundedBorder)
+                SecureField("API Key", text: $appState.openAIAPIKey, prompt: Text("sk-..."))
                 Text("Used for Whisper/GPT-4o transcription and OpenAI refinement.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
 
             Section("Claude (Anthropic)") {
-                SecureField("sk-ant-...", text: $appState.claudeAPIKey)
-                    .textFieldStyle(.roundedBorder)
+                SecureField("API Key", text: $appState.claudeAPIKey, prompt: Text("sk-ant-..."))
                 Text("Used for Claude AI refinement.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
 
             Section("xAI (Grok)") {
-                SecureField("xai-...", text: $appState.xaiAPIKey)
-                    .textFieldStyle(.roundedBorder)
+                SecureField("API Key", text: $appState.xaiAPIKey, prompt: Text("xai-..."))
                 Text("Used for Grok AI refinement.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -81,28 +78,10 @@ struct SettingsView: View {
 
             if appState.sttProvider == .localWhisper {
                 Section("Local Whisper Endpoint") {
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text("Host").font(.system(size: 11)).foregroundStyle(.secondary)
-                            TextField("192.168.10.110", text: $appState.localWhisperHost)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        VStack(alignment: .leading) {
-                            Text("Port").font(.system(size: 11)).foregroundStyle(.secondary)
-                            TextField("8000", text: $appState.localWhisperPort)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 80)
-                        }
-                    }
-
-                    VStack(alignment: .leading) {
-                        Text("Path").font(.system(size: 11)).foregroundStyle(.secondary)
-                        TextField("/api/transcribe", text: $appState.localWhisperPath)
-                            .textFieldStyle(.roundedBorder)
-                    }
-
-                    TextField("Model name (e.g. whisper-large-v3)", text: $appState.localWhisperModel)
-                        .textFieldStyle(.roundedBorder)
+                    TextField("Host", text: $appState.localWhisperHost, prompt: Text("192.168.10.110"))
+                    TextField("Port", text: $appState.localWhisperPort, prompt: Text("8000"))
+                    TextField("Path", text: $appState.localWhisperPath, prompt: Text("/api/transcribe"))
+                    TextField("Model", text: $appState.localWhisperModel, prompt: Text("whisper-large-v3"))
 
                     Text("Uses OpenAI-compatible API format. Works with whisper.cpp server, faster-whisper-server, LocalAI, etc.")
                         .font(.system(size: 11))
@@ -111,10 +90,8 @@ struct SettingsView: View {
             }
 
             Section("Language") {
-                TextField("Language code (e.g. en, zh, ja)", text: $appState.sttLanguage)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 120)
-                Text("ISO 639-1 code. Leave as 'en' for English. Use 'zh' for Chinese, 'ja' for Japanese, etc.")
+                TextField("Language", text: $appState.sttLanguage, prompt: Text("en"))
+                Text("ISO 639-1 code: en, zh, ja, etc.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
