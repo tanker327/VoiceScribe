@@ -9,6 +9,8 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var showError = false
     @State private var alwaysOnTop = false
+    @State private var spaceKeyMonitor: Any?
+    @State private var mouseMonitor: Any?
 
     var body: some View {
         HSplitView {
@@ -21,6 +23,18 @@ struct ContentView: View {
             }
         }
         .toolbar { toolbarItems }
+        .onAppear {
+            installSpaceKeyMonitor()
+            installMouseMonitor()
+            // Resign first responder so the editor doesn't auto-focus on launch
+            DispatchQueue.main.async {
+                NSApp.keyWindow?.makeFirstResponder(nil)
+            }
+        }
+        .onDisappear {
+            removeSpaceKeyMonitor()
+            removeMouseMonitor()
+        }
         .alert("Error", isPresented: $showError) {
             Button("OK") { showError = false }
         } message: {
@@ -219,7 +233,7 @@ struct ContentView: View {
             Text("Press Record or start typing")
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary.opacity(0.5))
-            Text("⌥R  Record  ·  ⌥E  Refine  ·  ⌥C  Copy")
+            Text("Space  Record  ·  ⌥E  Refine  ·  ⌥C  Copy")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary.opacity(0.35))
         }
@@ -566,5 +580,61 @@ struct ContentView: View {
             .scrollContentBackground(.hidden)
             .padding(12)
             .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    // MARK: - Event Monitors
+
+    private func installSpaceKeyMonitor() {
+        spaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Only intercept bare Space (no modifiers like Cmd, Opt, Ctrl)
+            guard event.keyCode == 49,
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [] else {
+                return event
+            }
+
+            // If the first responder is a text view, let Space type normally
+            if let responder = event.window?.firstResponder,
+               responder is NSTextView {
+                return event
+            }
+
+            // Otherwise toggle recording
+            if !appState.isTranscribing {
+                toggleRecording()
+            }
+            return nil // consume the event
+        }
+    }
+
+    private func removeSpaceKeyMonitor() {
+        if let monitor = spaceKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            spaceKeyMonitor = nil
+        }
+    }
+
+    private func installMouseMonitor() {
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+            guard let window = event.window,
+                  let firstResponder = window.firstResponder,
+                  firstResponder is NSTextView else {
+                return event
+            }
+
+            // Check if the click landed inside the text view; if not, resign focus
+            let textView = firstResponder as! NSTextView
+            let locationInTextView = textView.convert(event.locationInWindow, from: nil)
+            if !textView.bounds.contains(locationInTextView) {
+                window.makeFirstResponder(nil)
+            }
+            return event
+        }
+    }
+
+    private func removeMouseMonitor() {
+        if let monitor = mouseMonitor {
+            NSEvent.removeMonitor(monitor)
+            mouseMonitor = nil
+        }
     }
 }
