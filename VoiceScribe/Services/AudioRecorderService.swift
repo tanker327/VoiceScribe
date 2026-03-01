@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreAudio
 import Combine
 
 /// Records audio from the default input device and provides WAV data for transcription.
@@ -13,6 +14,30 @@ class AudioRecorderService: ObservableObject {
     /// Serial queue protecting `audioFile` from concurrent access between
     /// the real-time audio tap callback and `stopRecording()`.
     private let audioFileQueue = DispatchQueue(label: "com.voicescribe.audiofile")
+
+    /// Name of the system default audio input device
+    var inputDeviceName: String {
+        var deviceID: AudioDeviceID = 0
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID) == noErr,
+              deviceID != 0 else {
+            return "No Input"
+        }
+        var nameSize: UInt32 = 256
+        var cName = [CChar](repeating: 0, count: 256)
+        var nameAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(deviceID, &nameAddr, 0, nil, &nameSize, &cName)
+        return status == noErr ? String(cString: cName) : "Unknown"
+    }
 
     // MARK: - Public API
 

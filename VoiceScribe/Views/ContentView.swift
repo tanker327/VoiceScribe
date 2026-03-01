@@ -59,13 +59,13 @@ struct ContentView: View {
 
     private var mainPanel: some View {
         VStack(spacing: 0) {
-            statusBar
-            Divider()
             if appState.refinementMode == .custom {
                 controlsBar
                 Divider()
             }
             editorArea
+            Divider()
+            statusBar
             Divider()
             actionBar
         }
@@ -100,6 +100,13 @@ struct ContentView: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Color.purple.opacity(0.12))
+                .cornerRadius(4)
+
+            Label(recorder.inputDeviceName, systemImage: "mic")
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.green.opacity(0.12))
                 .cornerRadius(4)
 
             Text("\(wordCount) words · \(charCount) chars")
@@ -617,13 +624,19 @@ struct ContentView: View {
     }
 
     private func refineText() {
+        refineText(with: .cleanup)
+    }
+
+    private func refineText(with mode: RefinementMode) {
         guard !appState.transcribedText.isEmpty else { return }
 
+        appState.refinementMode = mode
+
         let prompt: String
-        if appState.refinementMode == .custom {
+        if mode == .custom {
             prompt = customPrompt.isEmpty ? "Clean up this transcription." : customPrompt
         } else {
-            prompt = appState.refinementMode.systemPrompt
+            prompt = mode.systemPrompt
         }
 
         let apiKey = appState.currentAIApiKey
@@ -720,17 +733,13 @@ struct ContentView: View {
                 .frame(height: 16)
                 .opacity(0.4)
 
-            // Mode picker chevron
+            // Mode picker chevron — each option triggers refinement directly
             Menu {
                 ForEach(RefinementMode.allCases) { mode in
                     Button {
-                        appState.refinementMode = mode
+                        refineText(with: mode)
                     } label: {
-                        if mode == appState.refinementMode {
-                            Label(mode.rawValue, systemImage: "checkmark")
-                        } else {
-                            Label(mode.rawValue, systemImage: mode.icon)
-                        }
+                        Label(mode.rawValue, systemImage: mode.icon)
                     }
                 }
             } label: {

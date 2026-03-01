@@ -8,11 +8,11 @@ struct VoiceScribeApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
-                .frame(minWidth: 720, minHeight: 520)
-                .frame(idealWidth: 840, idealHeight: 620)
+                .frame(minWidth: 400, minHeight: 520)
+                .frame(idealWidth: 440, idealHeight: 620)
         }
         .windowStyle(.titleBar)
-        .defaultSize(width: 840, height: 620)
+        .defaultSize(width: 440, height: 620)
 
         Settings {
             SettingsView()
