@@ -6,10 +6,6 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		4E8D000B2F53B3000076F7D1 /* STTextView in Frameworks */ = {isa = PBXBuildFile; productRef = 4E8D000A2F53B3000076F7D1 /* STTextView */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXContainerItemProxy section */
 		4E8DFF632F5394EE0076F7D1 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -69,7 +65,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4E8D000B2F53B3000076F7D1 /* STTextView in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -130,7 +125,6 @@
 			);
 			name = VoiceScribe;
 			packageProductDependencies = (
-				4E8D000A2F53B3000076F7D1 /* STTextView */,
 			);
 			productName = VoiceScribe;
 			productReference = 4E8DFF552F5394EC0076F7D1 /* VoiceScribe.app */;
@@ -215,7 +209,6 @@
 			mainGroup = 4E8DFF4C2F5394EC0076F7D1;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				4E8D00092F53B2F40076F7D1 /* XCRemoteSwiftPackageReference "STTextView" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4E8DFF562F5394EC0076F7D1 /* Products */;
@@ -585,25 +578,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		4E8D00092F53B2F40076F7D1 /* XCRemoteSwiftPackageReference "STTextView" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/krzyzanowskim/STTextView";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.3.5;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		4E8D000A2F53B3000076F7D1 /* STTextView */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 4E8D00092F53B2F40076F7D1 /* XCRemoteSwiftPackageReference "STTextView" */;
-			productName = STTextView;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4E8DFF4D2F5394EC0076F7D1 /* Project object */;
 }

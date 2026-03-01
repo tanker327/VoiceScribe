@@ -59,7 +59,7 @@ struct SettingsView: View {
                 Picker("Provider", selection: $appState.sttProvider) {
                     ForEach(STTProvider.allCases) { provider in
                         HStack {
-                            Text(provider.rawValue)
+                            Text(provider.displayName)
                             if provider.requiresOpenAIKey && appState.openAIAPIKey.isEmpty {
                                 Text("(No API key)")
                                     .font(.system(size: 10))
@@ -108,9 +108,9 @@ struct SettingsView: View {
                 Picker("Provider", selection: $appState.aiProvider) {
                     ForEach(AIProvider.allCases) { provider in
                         if appState.hasAPIKey(for: provider) {
-                            Text(provider.rawValue).tag(provider)
+                            Text(provider.displayName).tag(provider)
                         } else {
-                            Text("\(provider.rawValue) (No API key)")
+                            Text("\(provider.displayName) (No API key)")
                                 .tag(provider)
                         }
                     }
@@ -120,7 +120,7 @@ struct SettingsView: View {
 
                 Picker("Mode", selection: $appState.refinementMode) {
                     ForEach(RefinementMode.allCases) { mode in
-                        Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+                        Label(mode.displayName, systemImage: mode.icon).tag(mode)
                     }
                 }
             }
@@ -212,6 +212,9 @@ struct SettingsView: View {
         }
     }
 
+    @State private var modelLoadTask: Task<Void, Never>?
+    @State private var cooldownTask: Task<Void, Never>?
+
     private func loadModels() {
         guard !isLoadingModels, !modelLoadCooldown else { return }
 
@@ -221,27 +224,34 @@ struct SettingsView: View {
         modelLoadError = nil
         isLoadingModels = true
 
-        Task {
+        modelLoadTask?.cancel()
+        modelLoadTask = Task {
             do {
                 let models = try await AIService.shared.fetchModels(provider: provider, apiKey: apiKey)
-                await MainActor.run {
-                    availableModels = models
-                    modelCache[provider] = models
-                    isLoadingModels = false
-                    modelLoadCooldown = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { modelLoadCooldown = false }
-                    if !models.contains(appState.aiModel), let first = models.first {
-                        appState.aiModel = first
-                    }
+                guard !Task.isCancelled else { return }
+                availableModels = models
+                modelCache[provider] = models
+                isLoadingModels = false
+                startCooldown()
+                if !models.contains(appState.aiModel), let first = models.first {
+                    appState.aiModel = first
                 }
             } catch {
-                await MainActor.run {
-                    isLoadingModels = false
-                    modelLoadCooldown = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { modelLoadCooldown = false }
-                    modelLoadError = error.localizedDescription
-                }
+                guard !Task.isCancelled else { return }
+                isLoadingModels = false
+                startCooldown()
+                modelLoadError = error.localizedDescription
             }
+        }
+    }
+
+    private func startCooldown() {
+        modelLoadCooldown = true
+        cooldownTask?.cancel()
+        cooldownTask = Task {
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            modelLoadCooldown = false
         }
     }
 

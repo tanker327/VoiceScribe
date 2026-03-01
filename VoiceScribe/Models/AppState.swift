@@ -1,26 +1,77 @@
 import SwiftUI
 import Combine
 
+// MARK: - App Appearance
+
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system = "system"
+    case light  = "light"
+    case dark   = "dark"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .system: return "System"
+        case .light:  return "Light"
+        case .dark:   return "Dark"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .system: return "circle.lefthalf.filled"
+        case .light:  return "sun.max.fill"
+        case .dark:   return "moon.fill"
+        }
+    }
+
+    var next: AppAppearance {
+        switch self {
+        case .system: return .light
+        case .light:  return .dark
+        case .dark:   return .system
+        }
+    }
+}
+
 // MARK: - App State
 
 @MainActor
 class AppState: ObservableObject {
-    // --- API Keys (stored in Keychain) ---
+    // --- API Keys (stored in Keychain, debounced) ---
     @Published var openAIAPIKey: String = "" {
-        didSet { let v = openAIAPIKey; Task.detached { KeychainHelper.save(key: "openAIAPIKey", value: v) } }
+        didSet { scheduleKeychainSave(key: "openAIAPIKey", value: openAIAPIKey) }
     }
     @Published var claudeAPIKey: String = "" {
-        didSet { let v = claudeAPIKey; Task.detached { KeychainHelper.save(key: "claudeAPIKey", value: v) } }
+        didSet { scheduleKeychainSave(key: "claudeAPIKey", value: claudeAPIKey) }
     }
     @Published var xaiAPIKey: String = "" {
-        didSet { let v = xaiAPIKey; Task.detached { KeychainHelper.save(key: "xaiAPIKey", value: v) } }
+        didSet { scheduleKeychainSave(key: "xaiAPIKey", value: xaiAPIKey) }
+    }
+
+    private var keychainSaveTimers: [String: DispatchWorkItem] = [:]
+
+    private func scheduleKeychainSave(key: String, value: String) {
+        keychainSaveTimers[key]?.cancel()
+        let work = DispatchWorkItem { KeychainHelper.save(key: key, value: value) }
+        keychainSaveTimers[key] = work
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     // --- STT Settings ---
-    @AppStorage("sttProvider")       var sttProvider: STTProvider = .gpt4oTranscribe
-    @AppStorage("localWhisperHost")  var localWhisperHost: String = "192.168.10.110"
-    @AppStorage("localWhisperPort")  var localWhisperPort: String = "8000"
-    @AppStorage("localWhisperPath")  var localWhisperPath: String = "/api/transcribe"
+    @Published var sttProvider: STTProvider = .gpt4oTranscribe {
+        didSet { UserDefaults.standard.set(sttProvider.rawValue, forKey: "sttProvider") }
+    }
+    @Published var localWhisperHost: String = "192.168.10.110" {
+        didSet { UserDefaults.standard.set(localWhisperHost, forKey: "localWhisperHost") }
+    }
+    @Published var localWhisperPort: String = "8000" {
+        didSet { UserDefaults.standard.set(localWhisperPort, forKey: "localWhisperPort") }
+    }
+    @Published var localWhisperPath: String = "/api/transcribe" {
+        didSet { UserDefaults.standard.set(localWhisperPath, forKey: "localWhisperPath") }
+    }
 
     /// Full URL for the local Whisper endpoint, constructed from host, port, and path
     var localWhisperEndpoint: String {
@@ -29,44 +80,42 @@ class AppState: ObservableObject {
         let path = localWhisperPath.trimmingCharacters(in: .whitespacesAndNewlines)
         return "http://\(host):\(port)\(path)"
     }
-    @AppStorage("localWhisperModel") var localWhisperModel: String = "whisper-large-v3"
-    @AppStorage("sttLanguage")       var sttLanguage: String = "en"
+
+    @Published var localWhisperModel: String = "whisper-large-v3" {
+        didSet { UserDefaults.standard.set(localWhisperModel, forKey: "localWhisperModel") }
+    }
+    @Published var sttLanguage: String = "en" {
+        didSet { UserDefaults.standard.set(sttLanguage, forKey: "sttLanguage") }
+    }
 
     // --- AI Refinement Settings ---
-    @AppStorage("aiProvider")        var aiProvider: AIProvider = .claude
-    @AppStorage("aiModel")           var aiModel: String = "claude-sonnet-4-20250514"
-    @AppStorage("refinementMode")    var refinementMode: RefinementMode = .cleanup
+    @Published var aiProvider: AIProvider = .claude {
+        didSet { UserDefaults.standard.set(aiProvider.rawValue, forKey: "aiProvider") }
+    }
+    @Published var aiModel: String = "claude-sonnet-4-20250514" {
+        didSet { UserDefaults.standard.set(aiModel, forKey: "aiModel") }
+    }
+    @Published var refinementMode: RefinementMode = .cleanup {
+        didSet { UserDefaults.standard.set(refinementMode.rawValue, forKey: "refinementMode") }
+    }
 
     // --- Editor Settings ---
-    @AppStorage("fontSize")          var fontSize: Double = 16
-    @AppStorage("autoRefineOnStop")       var autoRefineOnStop: Bool = false
-    @AppStorage("autoCopyOnTranscribe")  var autoCopyOnTranscribe: Bool = true
-    @AppStorage("autoCopyOnRefine")      var autoCopyOnRefine: Bool = true
+    @Published var fontSize: Double = 16 {
+        didSet { UserDefaults.standard.set(fontSize, forKey: "fontSize") }
+    }
+    @Published var autoRefineOnStop: Bool = false {
+        didSet { UserDefaults.standard.set(autoRefineOnStop, forKey: "autoRefineOnStop") }
+    }
+    @Published var autoCopyOnTranscribe: Bool = true {
+        didSet { UserDefaults.standard.set(autoCopyOnTranscribe, forKey: "autoCopyOnTranscribe") }
+    }
+    @Published var autoCopyOnRefine: Bool = true {
+        didSet { UserDefaults.standard.set(autoCopyOnRefine, forKey: "autoCopyOnRefine") }
+    }
 
-    /// Appearance: "system", "light", or "dark"
-    @AppStorage("appAppearance")     var appAppearance: String = "system"
-
-    // --- Keychain Migration ---
-    @AppStorage("keychainMigrationDone") private var keychainMigrationDone: Bool = false
-
-    init() {
-        // One-time migration from UserDefaults to Keychain
-        if !keychainMigrationDone {
-            let defaults = UserDefaults.standard
-            for key in ["openAIAPIKey", "claudeAPIKey", "xaiAPIKey"] {
-                if let value = defaults.string(forKey: key), !value.isEmpty {
-                    KeychainHelper.save(key: key, value: value)
-                    defaults.removeObject(forKey: key)
-                    print("[Keychain] Migrated \(key) from UserDefaults to Keychain")
-                }
-            }
-            keychainMigrationDone = true
-        }
-
-        // Load keys from Keychain
-        openAIAPIKey = KeychainHelper.load(key: "openAIAPIKey")
-        claudeAPIKey = KeychainHelper.load(key: "claudeAPIKey")
-        xaiAPIKey = KeychainHelper.load(key: "xaiAPIKey")
+    // --- Appearance ---
+    @Published var appAppearance: AppAppearance = .system {
+        didSet { UserDefaults.standard.set(appAppearance.rawValue, forKey: "appAppearance") }
     }
 
     // --- Runtime State ---
@@ -79,7 +128,110 @@ class AppState: ObservableObject {
     @Published var showingRefined = false
     @Published var history: [TranscriptionEntry] = []
 
-    /// Returns the API key for the currently selected AI provider
+    init() {
+        let defaults = UserDefaults.standard
+
+        // One-time migration from UserDefaults to Keychain
+        if !defaults.bool(forKey: "keychainMigrationDone") {
+            for key in ["openAIAPIKey", "claudeAPIKey", "xaiAPIKey"] {
+                if let value = defaults.string(forKey: key), !value.isEmpty {
+                    KeychainHelper.save(key: key, value: value)
+                    defaults.removeObject(forKey: key)
+                    print("[Keychain] Migrated \(key) from UserDefaults to Keychain")
+                }
+            }
+            defaults.set(true, forKey: "keychainMigrationDone")
+        }
+
+        // Migrate old display-string enum values to stable identifiers
+        Self.migrateEnumValues(defaults)
+
+        // Load API keys from Keychain (using _prop to skip didSet)
+        _openAIAPIKey = Published(wrappedValue: KeychainHelper.load(key: "openAIAPIKey"))
+        _claudeAPIKey = Published(wrappedValue: KeychainHelper.load(key: "claudeAPIKey"))
+        _xaiAPIKey = Published(wrappedValue: KeychainHelper.load(key: "xaiAPIKey"))
+
+        // Load settings from UserDefaults (using _prop to skip didSet)
+        if let raw = defaults.string(forKey: "sttProvider"),
+           let val = STTProvider(rawValue: raw) {
+            _sttProvider = Published(wrappedValue: val)
+        }
+        if let v = defaults.string(forKey: "localWhisperHost") { _localWhisperHost = Published(wrappedValue: v) }
+        if let v = defaults.string(forKey: "localWhisperPort") { _localWhisperPort = Published(wrappedValue: v) }
+        if let v = defaults.string(forKey: "localWhisperPath") { _localWhisperPath = Published(wrappedValue: v) }
+        if let v = defaults.string(forKey: "localWhisperModel") { _localWhisperModel = Published(wrappedValue: v) }
+        if let v = defaults.string(forKey: "sttLanguage") { _sttLanguage = Published(wrappedValue: v) }
+
+        if let raw = defaults.string(forKey: "aiProvider"),
+           let val = AIProvider(rawValue: raw) {
+            _aiProvider = Published(wrappedValue: val)
+        }
+        if let v = defaults.string(forKey: "aiModel") { _aiModel = Published(wrappedValue: v) }
+        if let raw = defaults.string(forKey: "refinementMode"),
+           let val = RefinementMode(rawValue: raw) {
+            _refinementMode = Published(wrappedValue: val)
+        }
+
+        if defaults.object(forKey: "fontSize") != nil {
+            _fontSize = Published(wrappedValue: defaults.double(forKey: "fontSize"))
+        }
+        if defaults.object(forKey: "autoRefineOnStop") != nil {
+            _autoRefineOnStop = Published(wrappedValue: defaults.bool(forKey: "autoRefineOnStop"))
+        }
+        if defaults.object(forKey: "autoCopyOnTranscribe") != nil {
+            _autoCopyOnTranscribe = Published(wrappedValue: defaults.bool(forKey: "autoCopyOnTranscribe"))
+        }
+        if defaults.object(forKey: "autoCopyOnRefine") != nil {
+            _autoCopyOnRefine = Published(wrappedValue: defaults.bool(forKey: "autoCopyOnRefine"))
+        }
+
+        if let raw = defaults.string(forKey: "appAppearance"),
+           let val = AppAppearance(rawValue: raw) {
+            _appAppearance = Published(wrappedValue: val)
+        }
+    }
+
+    /// Migrate old display-string enum raw values to stable identifiers
+    private static func migrateEnumValues(_ defaults: UserDefaults) {
+        let sttMap = [
+            "OpenAI Whisper": STTProvider.openAIWhisper.rawValue,
+            "GPT-4o Transcribe": STTProvider.gpt4oTranscribe.rawValue,
+            "Local Whisper": STTProvider.localWhisper.rawValue
+        ]
+        if let old = defaults.string(forKey: "sttProvider"), let new = sttMap[old] {
+            defaults.set(new, forKey: "sttProvider")
+            print("[Migration] sttProvider: \(old) -> \(new)")
+        }
+
+        let aiMap = [
+            "Claude (Anthropic)": AIProvider.claude.rawValue,
+            "OpenAI": AIProvider.openai.rawValue,
+            "xAI (Grok)": AIProvider.xai.rawValue
+        ]
+        if let old = defaults.string(forKey: "aiProvider"), let new = aiMap[old] {
+            defaults.set(new, forKey: "aiProvider")
+            print("[Migration] aiProvider: \(old) -> \(new)")
+        }
+
+        let modeMap = [
+            "Clean Up": RefinementMode.cleanup.rawValue,
+            "Formal / Professional": RefinementMode.formal.rawValue,
+            "Casual": RefinementMode.casual.rawValue,
+            "Bullet Points": RefinementMode.bullets.rawValue,
+            "Email Draft": RefinementMode.email.rawValue,
+            "Summarize": RefinementMode.summary.rawValue,
+            "Technical Writing": RefinementMode.technical.rawValue,
+            "Translate EN \u{2194} CN": RefinementMode.translate.rawValue,
+            "Custom Prompt": RefinementMode.custom.rawValue
+        ]
+        if let old = defaults.string(forKey: "refinementMode"), let new = modeMap[old] {
+            defaults.set(new, forKey: "refinementMode")
+            print("[Migration] refinementMode: \(old) -> \(new)")
+        }
+    }
+
+    // MARK: - Computed Properties
+
     var currentAIApiKey: String {
         switch aiProvider {
         case .claude: return claudeAPIKey
@@ -88,7 +240,6 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Check if a given AI provider has an API key configured
     func hasAPIKey(for provider: AIProvider) -> Bool {
         switch provider {
         case .claude: return !claudeAPIKey.isEmpty
@@ -96,16 +247,34 @@ class AppState: ObservableObject {
         case .xai:    return !xaiAPIKey.isEmpty
         }
     }
+
+    // MARK: - History Management
+
+    func addHistoryEntry(_ entry: TranscriptionEntry) {
+        history.insert(entry, at: 0)
+        if history.count > 50 {
+            history = Array(history.prefix(50))
+        }
+        print("[History] Added entry (total: \(history.count))")
+    }
 }
 
 // MARK: - STT Provider
 
-enum STTProvider: String, CaseIterable, Identifiable {
-    case openAIWhisper    = "OpenAI Whisper"
-    case gpt4oTranscribe  = "GPT-4o Transcribe"
-    case localWhisper     = "Local Whisper"
+enum STTProvider: String, CaseIterable, Identifiable, Codable {
+    case openAIWhisper    = "openai_whisper"
+    case gpt4oTranscribe  = "gpt4o_transcribe"
+    case localWhisper     = "local_whisper"
 
     var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .openAIWhisper:   return "OpenAI Whisper"
+        case .gpt4oTranscribe: return "GPT-4o Transcribe"
+        case .localWhisper:    return "Local Whisper"
+        }
+    }
 
     var description: String {
         switch self {
@@ -141,12 +310,20 @@ enum STTProvider: String, CaseIterable, Identifiable {
 
 // MARK: - AI Provider
 
-enum AIProvider: String, CaseIterable, Identifiable {
-    case claude = "Claude (Anthropic)"
-    case openai = "OpenAI"
-    case xai   = "xAI (Grok)"
+enum AIProvider: String, CaseIterable, Identifiable, Codable {
+    case claude = "claude"
+    case openai = "openai"
+    case xai    = "xai"
 
     var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .claude: return "Claude (Anthropic)"
+        case .openai: return "OpenAI"
+        case .xai:    return "xAI (Grok)"
+        }
+    }
 
     var defaultModel: String {
         switch self {
@@ -167,18 +344,32 @@ enum AIProvider: String, CaseIterable, Identifiable {
 
 // MARK: - Refinement Mode
 
-enum RefinementMode: String, CaseIterable, Identifiable {
-    case cleanup    = "Clean Up"
-    case formal     = "Formal / Professional"
-    case casual     = "Casual"
-    case bullets    = "Bullet Points"
-    case email      = "Email Draft"
-    case summary    = "Summarize"
-    case technical  = "Technical Writing"
-    case translate  = "Translate EN ↔ CN"
-    case custom     = "Custom Prompt"
+enum RefinementMode: String, CaseIterable, Identifiable, Codable {
+    case cleanup    = "cleanup"
+    case formal     = "formal"
+    case casual     = "casual"
+    case bullets    = "bullets"
+    case email      = "email"
+    case summary    = "summary"
+    case technical  = "technical"
+    case translate  = "translate"
+    case custom     = "custom"
 
     var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .cleanup:   return "Clean Up"
+        case .formal:    return "Formal / Professional"
+        case .casual:    return "Casual"
+        case .bullets:   return "Bullet Points"
+        case .email:     return "Email Draft"
+        case .summary:   return "Summarize"
+        case .technical: return "Technical Writing"
+        case .translate: return "Translate EN \u{2194} CN"
+        case .custom:    return "Custom Prompt"
+        }
+    }
 
     var icon: String {
         switch self {
@@ -257,10 +448,10 @@ struct TranscriptionEntry: Identifiable, Codable {
     let date: Date
     var rawText: String
     var refinedText: String?
-    var mode: String
-    let sttProvider: String
+    var mode: RefinementMode
+    let sttProvider: STTProvider
 
-    init(rawText: String, refinedText: String? = nil, mode: String = "cleanup", sttProvider: String = "") {
+    init(rawText: String, refinedText: String? = nil, mode: RefinementMode = .cleanup, sttProvider: STTProvider = .gpt4oTranscribe) {
         self.id = UUID()
         self.date = Date()
         self.rawText = rawText

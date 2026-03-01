@@ -5,35 +5,39 @@ class AIService {
     static let shared = AIService()
     private init() {}
 
+    private let anthropicVersion = "2023-06-01"
+
     // MARK: - Fetch Models
 
     func fetchModels(provider: AIProvider, apiKey: String) async throws -> [String] {
-        guard !apiKey.isEmpty else { throw AIError.missingAPIKey(provider.rawValue) }
+        guard !apiKey.isEmpty else { throw AIError.missingAPIKey(provider.displayName) }
 
-        let url = URL(string: "\(provider.baseURL)/v1/models")!
+        guard let url = URL(string: "\(provider.baseURL)/v1/models") else {
+            throw AIError.apiError(provider: provider.displayName, statusCode: 0, message: "Invalid URL")
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 15
 
         if provider == .claude {
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            request.setValue(anthropicVersion, forHTTPHeaderField: "anthropic-version")
         } else {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
 
-        print("[AIService] Fetching models from \(provider.rawValue)...")
+        print("[AIService] Fetching models from \(provider.displayName)...")
         let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let errBody = String(data: data, encoding: .utf8) ?? "Unknown"
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw AIError.apiError(provider: provider.rawValue, statusCode: code, message: errBody)
+            throw AIError.apiError(provider: provider.displayName, statusCode: code, message: errBody)
         }
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let models = json["data"] as? [[String: Any]] else {
-            throw AIError.parseError(provider.rawValue)
+            throw AIError.parseError(provider.displayName)
         }
 
         var modelIds = models.compactMap { $0["id"] as? String }
@@ -44,7 +48,7 @@ class AIService {
         }
 
         modelIds.sort()
-        print("[AIService] Loaded \(modelIds.count) models from \(provider.rawValue)")
+        print("[AIService] Loaded \(modelIds.count) models from \(provider.displayName)")
         return modelIds
     }
 
@@ -74,12 +78,14 @@ class AIService {
     private func refineClaude(text: String, systemPrompt: String, apiKey: String, model: String) async throws -> String {
         guard !apiKey.isEmpty else { throw AIError.missingAPIKey("Claude") }
 
-        let url = URL(string: "https://api.anthropic.com/v1/messages")!
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
+            throw AIError.apiError(provider: "Claude", statusCode: 0, message: "Invalid URL")
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.setValue(anthropicVersion, forHTTPHeaderField: "anthropic-version")
         request.timeoutInterval = 60
 
         let body: [String: Any] = [
@@ -93,6 +99,7 @@ class AIService {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        print("[AIService] Sending refinement request to Claude (model: \(model))")
         let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
@@ -108,6 +115,7 @@ class AIService {
             throw AIError.parseError("Claude")
         }
 
+        print("[AIService] Claude refinement complete")
         return resultText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -117,10 +125,12 @@ class AIService {
         text: String, systemPrompt: String, apiKey: String,
         model: String, provider: AIProvider
     ) async throws -> String {
-        let providerName = provider.rawValue
+        let providerName = provider.displayName
         guard !apiKey.isEmpty else { throw AIError.missingAPIKey(providerName) }
 
-        let url = URL(string: "\(provider.baseURL)/v1/chat/completions")!
+        guard let url = URL(string: "\(provider.baseURL)/v1/chat/completions") else {
+            throw AIError.apiError(provider: providerName, statusCode: 0, message: "Invalid URL")
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -169,7 +179,7 @@ class AIService {
         var errorDescription: String? {
             switch self {
             case .missingAPIKey(let p):
-                return "\(p) API key is required. Set it in Settings → API Keys."
+                return "\(p) API key is required. Set it in Settings \u{2192} API Keys."
             case .apiError(let p, let code, let msg):
                 return "\(p) API error (\(code)): \(msg)"
             case .parseError(let p):

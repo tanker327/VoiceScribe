@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var textBeforeRecording: String = ""
     @State private var transcriptionTask: Task<Void, Never>?
     @State private var refinementTask: Task<Void, Never>?
+    @State private var toastTask: Task<Void, Never>?
     @State private var spaceKeyMonitor: Any?
     @State private var mouseMonitor: Any?
 
@@ -40,6 +41,11 @@ struct ContentView: View {
         .onDisappear {
             transcriptionTask?.cancel()
             refinementTask?.cancel()
+            toastTask?.cancel()
+            removeSpaceKeyMonitor()
+            removeMouseMonitor()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             removeSpaceKeyMonitor()
             removeMouseMonitor()
         }
@@ -88,14 +94,14 @@ struct ContentView: View {
             Spacer()
 
             // STT badge
-            Text(appState.sttProvider.rawValue)
+            Text(appState.sttProvider.displayName)
                 .font(.system(size: 10, weight: .medium, design: .rounded))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Color.accentColor.opacity(0.12))
                 .cornerRadius(4)
 
-            Text(appState.aiProvider.rawValue)
+            Text(appState.aiProvider.displayName)
                 .font(.system(size: 10, weight: .medium, design: .rounded))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
@@ -295,6 +301,7 @@ struct ContentView: View {
                 .keyboardShortcut(.delete, modifiers: .command)
                 .controlSize(.large)
                 .help("Clear")
+                .accessibilityLabel("Clear editor")
 
                 Button(action: copyToClipboard) {
                     Image(systemName: "doc.on.doc")
@@ -303,6 +310,7 @@ struct ContentView: View {
                 .controlSize(.large)
                 .disabled(currentText.isEmpty)
                 .help("Copy")
+                .accessibilityLabel("Copy to clipboard")
 
                 refineButton
 
@@ -363,17 +371,19 @@ struct ContentView: View {
             Button {
                 cycleAppearance()
             } label: {
-                Image(systemName: appearanceIcon)
+                Image(systemName: appState.appAppearance.icon)
             }
-            .help("Appearance: \(appState.appAppearance.capitalized)")
+            .help("Appearance: \(appState.appAppearance.displayName)")
 
             Button { appState.fontSize = max(10, appState.fontSize - 1) } label: {
                 Image(systemName: "textformat.size.smaller")
             }
+            .accessibilityLabel("Decrease font size")
 
             Button { appState.fontSize = min(24, appState.fontSize + 1) } label: {
                 Image(systemName: "textformat.size.larger")
             }
+            .accessibilityLabel("Increase font size")
 
             SettingsLink {
                 Image(systemName: "gearshape")
@@ -387,29 +397,16 @@ struct ContentView: View {
         window.level = floating ? .floating : .normal
     }
 
-    private var appearanceIcon: String {
-        switch appState.appAppearance {
-        case "light": return "sun.max.fill"
-        case "dark":  return "moon.fill"
-        default:      return "circle.lefthalf.filled"
-        }
-    }
-
     private func cycleAppearance() {
-        switch appState.appAppearance {
-        case "system": appState.appAppearance = "light"
-        case "light":  appState.appAppearance = "dark"
-        case "dark":   appState.appAppearance = "system"
-        default:       appState.appAppearance = "system"
-        }
+        appState.appAppearance = appState.appAppearance.next
         applyAppearance()
     }
 
     private func applyAppearance() {
         switch appState.appAppearance {
-        case "light": NSApp.appearance = NSAppearance(named: .aqua)
-        case "dark":  NSApp.appearance = NSAppearance(named: .darkAqua)
-        default:      NSApp.appearance = nil  // follow system
+        case .light:  NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark:   NSApp.appearance = NSAppearance(named: .darkAqua)
+        case .system: NSApp.appearance = nil
         }
     }
 
@@ -447,12 +444,6 @@ struct ContentView: View {
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                             Spacer()
-//                            Text(entry.mode)
-//                                .font(.system(size: 9))
-//                                .padding(.horizontal, 4)
-//                                .padding(.vertical, 1)
-//                                .background(Color.accentColor.opacity(0.1))
-//                                .cornerRadius(3)
                         }
                     }
                     .padding(.vertical, 3)
@@ -505,7 +496,7 @@ struct ContentView: View {
     }
 
     private var wordCount: Int {
-        currentText.split(separator: " ").count
+        currentText.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
     }
 
     private var charCount: Int {
@@ -604,11 +595,10 @@ struct ContentView: View {
                         // Create a new history entry immediately
                         let entry = TranscriptionEntry(
                             rawText: text,
-                            mode: appState.refinementMode.rawValue,
-                            sttProvider: appState.sttProvider.rawValue
+                            mode: appState.refinementMode,
+                            sttProvider: appState.sttProvider
                         )
-                        appState.history.insert(entry, at: 0)
-                        if appState.history.count > 50 { appState.history = Array(appState.history.prefix(50)) }
+                        appState.addHistoryEntry(entry)
                         currentHistoryEntryID = entry.id
                     }
                     isAppendMode = false
@@ -683,7 +673,7 @@ struct ContentView: View {
                     if let entryID = currentHistoryEntryID,
                        let idx = appState.history.firstIndex(where: { $0.id == entryID }) {
                         appState.history[idx].refinedText = refined
-                        appState.history[idx].mode = appState.refinementMode.rawValue
+                        appState.history[idx].mode = appState.refinementMode
                     }
 
                     // Auto-copy
@@ -707,8 +697,11 @@ struct ContentView: View {
         NSPasteboard.general.clearContents()
         let success = NSPasteboard.general.setString(currentText, forType: .string)
         if success {
+            toastTask?.cancel()
             withAnimation { showCopiedToast = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            toastTask = Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                guard !Task.isCancelled else { return }
                 withAnimation { showCopiedToast = false }
             }
         } else {
@@ -732,7 +725,7 @@ struct ContentView: View {
     // MARK: - Refine Button (with mode picker)
 
     private var refineButton: some View {
-        let disabled = appState.transcribedText.isEmpty || appState.isRefining || appState.isRecording
+        let isDisabled = appState.transcribedText.isEmpty || appState.isRefining || appState.isRecording
 
         return HStack(spacing: 0) {
             // Refine action
@@ -749,13 +742,13 @@ struct ContentView: View {
                 .frame(height: 16)
                 .opacity(0.4)
 
-            // Mode picker chevron — each option triggers refinement directly
+            // Mode picker chevron - each option triggers refinement directly
             Menu {
                 ForEach(RefinementMode.allCases) { mode in
                     Button {
                         refineText(with: mode)
                     } label: {
-                        Label(mode.rawValue, systemImage: mode.icon)
+                        Label(mode.displayName, systemImage: mode.icon)
                     }
                 }
             } label: {
@@ -765,14 +758,13 @@ struct ContentView: View {
             .fixedSize()
             .frame(width: 16)
         }
-        .foregroundColor(disabled ? .secondary : .white)
+        .foregroundColor(isDisabled ? .secondary : .white)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(disabled ? Color.accentColor.opacity(0.3) : Color.accentColor)
+                .fill(isDisabled ? Color.accentColor.opacity(0.3) : Color.accentColor)
         )
-        .help(appState.refinementMode.rawValue)
-        .allowsHitTesting(!disabled)
-        .opacity(disabled ? 0.6 : 1.0)
+        .help(appState.refinementMode.displayName)
+        .disabled(isDisabled)
     }
 
     private func abortRecording() {

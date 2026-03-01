@@ -6,17 +6,25 @@ import Combine
 class AudioRecorderService: ObservableObject {
     @Published var isRecording = false
     @Published var audioLevel: Float = 0.0
+    @Published private(set) var inputDeviceName: String = "No Input"
 
     private var audioEngine = AVAudioEngine()
     private var audioFile: AVAudioFile?
     private var tempFileURL: URL?
+    private var deviceChangeListener: AudioObjectPropertyListenerBlock?
 
     /// Serial queue protecting `audioFile` from concurrent access between
     /// the real-time audio tap callback and `stopRecording()`.
     private let audioFileQueue = DispatchQueue(label: "com.voicescribe.audiofile")
 
-    /// Name of the system default audio input device
-    var inputDeviceName: String {
+    init() {
+        refreshInputDeviceName()
+        installDeviceChangeListener()
+    }
+
+    // MARK: - Input Device
+
+    private func refreshInputDeviceName() {
         var deviceID: AudioDeviceID = 0
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         var address = AudioObjectPropertyAddress(
@@ -26,7 +34,8 @@ class AudioRecorderService: ObservableObject {
         )
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID) == noErr,
               deviceID != 0 else {
-            return "No Input"
+            inputDeviceName = "No Input"
+            return
         }
         var nameSize: UInt32 = 256
         var cName = [CChar](repeating: 0, count: 256)
@@ -36,13 +45,33 @@ class AudioRecorderService: ObservableObject {
             mElement: kAudioObjectPropertyElementMain
         )
         let status = AudioObjectGetPropertyData(deviceID, &nameAddr, 0, nil, &nameSize, &cName)
-        return status == noErr ? String(cString: cName) : "Unknown"
+        inputDeviceName = status == noErr ? String(cString: cName) : "Unknown"
+    }
+
+    private func installDeviceChangeListener() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            DispatchQueue.main.async { self?.refreshInputDeviceName() }
+        }
+        deviceChangeListener = block
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block
+        )
     }
 
     // MARK: - Public API
 
     /// Start recording to a temp WAV file.
     func startRecording() throws {
+        guard !isRecording else {
+            print("[Recorder] Already recording, ignoring startRecording()")
+            return
+        }
+
         let tempDir = FileManager.default.temporaryDirectory
         let fileURL = tempDir.appendingPathComponent(UUID().uuidString + ".wav")
         tempFileURL = fileURL
@@ -55,7 +84,7 @@ class AudioRecorderService: ObservableObject {
             throw RecorderError.noInputDevice
         }
 
-        // Create output file – 16-bit PCM for maximum compatibility
+        // Create output file - 16-bit PCM for maximum compatibility
         let outputSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16000.0,
@@ -72,7 +101,7 @@ class AudioRecorderService: ObservableObject {
             interleaved: false
         )
 
-        // Install tap — downsample to 16kHz mono for Whisper
+        // Install tap - downsample to 16kHz mono for Whisper
         guard let desiredFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false) else {
             throw RecorderError.formatNotSupported
         }
@@ -96,9 +125,13 @@ class AudioRecorderService: ObservableObject {
             }
 
             if error == nil, convertedBuffer.frameLength > 0 {
-                // Write to file on a serial queue to avoid racing with stopRecording()
-                self.audioFileQueue.sync {
-                    try? self.audioFile?.write(from: convertedBuffer)
+                // Write to file on a serial queue (async to avoid blocking the audio thread)
+                self.audioFileQueue.async {
+                    do {
+                        try self.audioFile?.write(from: convertedBuffer)
+                    } catch {
+                        print("[Recorder] Failed to write audio buffer: \(error.localizedDescription)")
+                    }
                 }
 
                 // Compute audio level (RMS) for UI
@@ -118,6 +151,7 @@ class AudioRecorderService: ObservableObject {
 
         try audioEngine.start()
         isRecording = true
+        print("[Recorder] Started recording to \(fileURL.lastPathComponent)")
     }
 
     /// Stop recording and return the WAV file URL.
@@ -130,6 +164,7 @@ class AudioRecorderService: ObservableObject {
         }
         isRecording = false
         audioLevel = 0
+        print("[Recorder] Stopped recording")
         return tempFileURL
     }
 
@@ -142,6 +177,17 @@ class AudioRecorderService: ObservableObject {
     }
 
     deinit {
+        // Remove device change listener
+        if let block = deviceChangeListener {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block
+            )
+        }
         cleanupTempFile()
     }
 

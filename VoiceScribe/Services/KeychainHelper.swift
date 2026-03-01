@@ -5,28 +5,32 @@ enum KeychainHelper: Sendable {
     private static let service = "com.voicescribe"
 
     nonisolated static func save(key: String, value: String) {
-        guard let data = value.data(using: .utf8) else { return }
-
-        // Delete existing item first to avoid duplicates
-        let deleteQuery: [String: Any] = [
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key
         ]
-        SecItemDelete(deleteQuery as CFDictionary)
 
-        // Don't store empty strings
-        guard !value.isEmpty else { return }
+        // Delete if value is empty
+        guard !value.isEmpty, let data = value.data(using: .utf8) else {
+            SecItemDelete(query as CFDictionary)
+            return
+        }
 
-        let addQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-            kSecValueData as String: data
-        ]
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
-        if status != errSecSuccess {
-            print("[Keychain] Failed to save key '\(key)': \(status)")
+        // Try to update existing item first (avoids delete+add race)
+        let updateAttrs: [String: Any] = [kSecValueData as String: data]
+        let updateStatus = SecItemUpdate(query as CFDictionary, updateAttrs as CFDictionary)
+
+        if updateStatus == errSecItemNotFound {
+            // Item doesn't exist yet, add it
+            var addQuery = query
+            addQuery[kSecValueData as String] = data
+            let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+            if addStatus != errSecSuccess {
+                print("[Keychain] Failed to add key '\(key)': \(addStatus)")
+            }
+        } else if updateStatus != errSecSuccess {
+            print("[Keychain] Failed to update key '\(key)': \(updateStatus)")
         }
     }
 
@@ -42,6 +46,10 @@ enum KeychainHelper: Sendable {
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
 
+        if status != errSecSuccess && status != errSecItemNotFound {
+            print("[Keychain] Failed to load key '\(key)': \(status)")
+        }
+
         guard status == errSecSuccess, let data = result as? Data,
               let string = String(data: data, encoding: .utf8) else {
             return ""
@@ -55,6 +63,9 @@ enum KeychainHelper: Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: key
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            print("[Keychain] Failed to delete key '\(key)': \(status)")
+        }
     }
 }

@@ -5,7 +5,7 @@ struct VoiceScribeApp: App {
     @StateObject private var appState = AppState()
 
     var body: some Scene {
-        WindowGroup {
+        Window("VoiceScribe", id: "main") {
             ContentView()
                 .environmentObject(appState)
                 .frame(minWidth: 400, minHeight: 520)
