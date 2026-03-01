@@ -7,13 +7,13 @@ import Combine
 class AppState: ObservableObject {
     // --- API Keys (stored in Keychain) ---
     @Published var openAIAPIKey: String = "" {
-        didSet { KeychainHelper.save(key: "openAIAPIKey", value: openAIAPIKey) }
+        didSet { let v = openAIAPIKey; Task.detached { KeychainHelper.save(key: "openAIAPIKey", value: v) } }
     }
     @Published var claudeAPIKey: String = "" {
-        didSet { KeychainHelper.save(key: "claudeAPIKey", value: claudeAPIKey) }
+        didSet { let v = claudeAPIKey; Task.detached { KeychainHelper.save(key: "claudeAPIKey", value: v) } }
     }
     @Published var xaiAPIKey: String = "" {
-        didSet { KeychainHelper.save(key: "xaiAPIKey", value: xaiAPIKey) }
+        didSet { let v = xaiAPIKey; Task.detached { KeychainHelper.save(key: "xaiAPIKey", value: v) } }
     }
 
     // --- STT Settings ---
@@ -24,7 +24,10 @@ class AppState: ObservableObject {
 
     /// Full URL for the local Whisper endpoint, constructed from host, port, and path
     var localWhisperEndpoint: String {
-        "http://\(localWhisperHost):\(localWhisperPort)\(localWhisperPath)"
+        let host = localWhisperHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = localWhisperPort.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = localWhisperPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "http://\(host):\(port)\(path)"
     }
     @AppStorage("localWhisperModel") var localWhisperModel: String = "whisper-large-v3"
     @AppStorage("sttLanguage")       var sttLanguage: String = "en"

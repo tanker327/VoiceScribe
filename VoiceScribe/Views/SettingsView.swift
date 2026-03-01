@@ -5,6 +5,7 @@ struct SettingsView: View {
     @State private var modelLoadError: String?
     @State private var availableModels: [String] = []
     @State private var isLoadingModels = false
+    @State private var modelLoadCooldown = false
     @State private var modelCache: [AIProvider: [String]] = [:]
 
     var body: some View {
@@ -164,7 +165,11 @@ struct SettingsView: View {
             }
 
             Section("Keyboard Shortcuts") {
+                shortcutRow("Space", "Start / Stop recording")
+                shortcutRow("A", "Append recording / Stop")
+                shortcutRow("R", "Refine transcription")
                 shortcutRow("⌥R", "Start / Stop recording")
+                shortcutRow("⌥A", "Toggle append recording")
                 shortcutRow("⌥E", "Refine transcription")
                 shortcutRow("⌥C", "Copy current text")
                 shortcutRow("⌘⌫", "Clear editor")
@@ -211,7 +216,7 @@ struct SettingsView: View {
                             Label("Load Models", systemImage: "arrow.clockwise")
                         }
                     }
-                    .disabled(isLoadingModels)
+                    .disabled(isLoadingModels || modelLoadCooldown)
                     .font(.system(size: 11))
                 }
             } else {
@@ -231,7 +236,7 @@ struct SettingsView: View {
     }
 
     private func loadModels() {
-        guard !isLoadingModels else { return }
+        guard !isLoadingModels, !modelLoadCooldown else { return }
 
         let provider = appState.aiProvider
         let apiKey = appState.currentAIApiKey
@@ -246,6 +251,8 @@ struct SettingsView: View {
                     availableModels = models
                     modelCache[provider] = models
                     isLoadingModels = false
+                    modelLoadCooldown = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { modelLoadCooldown = false }
                     if !models.contains(appState.aiModel), let first = models.first {
                         appState.aiModel = first
                     }
@@ -253,6 +260,8 @@ struct SettingsView: View {
             } catch {
                 await MainActor.run {
                     isLoadingModels = false
+                    modelLoadCooldown = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { modelLoadCooldown = false }
                     modelLoadError = error.localizedDescription
                 }
             }

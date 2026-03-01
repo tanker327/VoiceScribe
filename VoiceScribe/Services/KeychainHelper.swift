@@ -1,10 +1,10 @@
 import Foundation
 import Security
 
-enum KeychainHelper {
+enum KeychainHelper: Sendable {
     private static let service = "com.voicescribe"
 
-    static func save(key: String, value: String) {
+    nonisolated static func save(key: String, value: String) {
         guard let data = value.data(using: .utf8) else { return }
 
         // Delete existing item first to avoid duplicates

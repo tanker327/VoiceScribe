@@ -38,6 +38,8 @@ struct ContentView: View {
             }
         }
         .onDisappear {
+            transcriptionTask?.cancel()
+            refinementTask?.cancel()
             removeSpaceKeyMonitor()
             removeMouseMonitor()
         }
@@ -217,7 +219,7 @@ struct ContentView: View {
             Text("Press Record or start typing")
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary.opacity(0.5))
-            Text("Space  Record  ·  ⌥E  Refine  ·  ⌥C  Copy")
+            Text("Space Record · A Append · R Refine · ⌥C Copy")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary.opacity(0.35))
         }
@@ -669,10 +671,14 @@ struct ContentView: View {
 
     private func copyToClipboard() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(currentText, forType: .string)
-        withAnimation { showCopiedToast = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            withAnimation { showCopiedToast = false }
+        let success = NSPasteboard.general.setString(currentText, forType: .string)
+        if success {
+            withAnimation { showCopiedToast = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                withAnimation { showCopiedToast = false }
+            }
+        } else {
+            showErrorAlert("Failed to copy to clipboard.")
         }
     }
 
@@ -838,7 +844,7 @@ struct ContentView: View {
             }
 
             // Check if the click landed inside the text view; if not, resign focus
-            let textView = firstResponder as! NSTextView
+            guard let textView = firstResponder as? NSTextView else { return event }
             let locationInTextView = textView.convert(event.locationInWindow, from: nil)
             if !textView.bounds.contains(locationInTextView) {
                 window.makeFirstResponder(nil)
