@@ -70,27 +70,14 @@ struct ContentView: View {
 
     private var statusBar: some View {
         HStack(spacing: 8) {
-            // Recording dot
-            Circle()
-                .fill(appState.isRecording ? Color.red : Color.gray.opacity(0.25))
-                .frame(width: 9, height: 9)
-                .overlay {
-                    if appState.isRecording {
-                        Circle()
-                            .fill(Color.red.opacity(0.35))
-                            .frame(width: 16, height: 16)
-                            .scaleEffect(1.3)
-                            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: appState.isRecording)
-                    }
-                }
+            if !appState.isRecording {
+                Circle()
+                    .fill(Color.gray.opacity(0.25))
+                    .frame(width: 9, height: 9)
 
-            Text(appState.statusMessage)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-
-            // Audio level meter
-            if appState.isRecording {
-                audioLevelBar
+                Text(appState.statusMessage)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
 
             Spacer()
@@ -120,19 +107,21 @@ struct ContentView: View {
     }
 
     private var audioLevelBar: some View {
-        HStack(spacing: 1.5) {
-            ForEach(0..<12, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(barColor(for: i))
-                    .frame(width: 3, height: 10)
-                    .opacity(Float(i) / 12.0 < recorder.audioLevel * 50 ? 1 : 0.15)
+        HStack(spacing: 2) {
+            ForEach(0..<16, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(barColor(for: i, total: 16))
+                    .frame(width: 4, height: 16)
+                    .opacity(Float(i) / 16.0 < recorder.audioLevel * 50 ? 1 : 0.15)
             }
         }
     }
 
-    private func barColor(for index: Int) -> Color {
-        if index < 8 { return .green }
-        if index < 10 { return .yellow }
+    private func barColor(for index: Int, total: Int = 16) -> Color {
+        let greenEnd = Int(Double(total) * 0.65)
+        let yellowEnd = Int(Double(total) * 0.85)
+        if index < greenEnd { return .green }
+        if index < yellowEnd { return .yellow }
         return .red
     }
 
@@ -251,8 +240,34 @@ struct ContentView: View {
 
     private var actionBar: some View {
         HStack(spacing: 10) {
+            // Recording indicator on the left
+            if appState.isRecording {
+                HStack(spacing: 12) {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 9, height: 9)
+                        .overlay {
+                            Circle()
+                                .fill(Color.red.opacity(0.35))
+                                .frame(width: 16, height: 16)
+                                .scaleEffect(1.3)
+                                .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: appState.isRecording)
+                        }
+
+                    audioLevelBar
+                }
+            }
+
+            Spacer()
+
             if appState.isRecording {
                 // Recording phase: Stop + Abort
+                Button(action: abortRecording) {
+                    Label("Abort", systemImage: "xmark.circle.fill")
+                }
+                .controlSize(.large)
+                .tint(.gray)
+
                 Button(action: toggleRecording) {
                     Label("Stop", systemImage: "stop.fill")
                 }
@@ -260,22 +275,24 @@ struct ContentView: View {
                 .tint(.red)
                 .controlSize(.large)
                 .keyboardShortcut("r", modifiers: .option)
-
-                Button(action: abortRecording) {
-                    Label("Abort", systemImage: "xmark.circle.fill")
-                }
-                .controlSize(.large)
-                .tint(.gray)
-
-                Spacer()
             } else if hasContent || appState.isTranscribing {
-                // Post-transcription phase: Record, Append, Refine, Copy, Clear
-                Button(action: toggleRecording) {
-                    Label("Record", systemImage: "mic.fill")
+                // Post-transcription phase
+                Button(action: clearAll) {
+                    Image(systemName: "trash")
                 }
+                .keyboardShortcut(.delete, modifiers: .command)
                 .controlSize(.large)
-                .keyboardShortcut("r", modifiers: .option)
-                .disabled(appState.isTranscribing || appState.isRefining)
+                .help("Clear")
+
+                Button(action: copyToClipboard) {
+                    Image(systemName: "doc.on.doc")
+                }
+                .keyboardShortcut("c", modifiers: .option)
+                .controlSize(.large)
+                .disabled(currentText.isEmpty)
+                .help("Copy")
+
+                refineButton
 
                 Button(action: toggleAppendRecording) {
                     Label("Append", systemImage: "plus.circle.fill")
@@ -285,32 +302,23 @@ struct ContentView: View {
                 .keyboardShortcut("a", modifiers: .option)
                 .disabled(appState.isTranscribing || appState.isRefining)
 
-                refineButton
-
-                Spacer()
-
-                Button(action: copyToClipboard) {
-                    Label("Copy", systemImage: "doc.on.doc")
+                Button(action: toggleRecording) {
+                    Label("Record", systemImage: "mic.fill")
                 }
-                .keyboardShortcut("c", modifiers: .option)
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
                 .controlSize(.large)
-                .disabled(currentText.isEmpty)
-
-                Button(action: clearAll) {
-                    Label("Clear", systemImage: "trash")
-                }
-                .keyboardShortcut(.delete, modifiers: .command)
-                .controlSize(.large)
+                .keyboardShortcut("r", modifiers: .option)
+                .disabled(appState.isTranscribing || appState.isRefining)
             } else {
                 // Initial phase: Record only
                 Button(action: toggleRecording) {
                     Label("Record", systemImage: "mic.fill")
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(.green)
                 .controlSize(.large)
                 .keyboardShortcut("r", modifiers: .option)
-
-                Spacer()
             }
         }
         .padding(.horizontal, 14)
@@ -745,23 +753,56 @@ struct ContentView: View {
 
     private func installSpaceKeyMonitor() {
         spaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // Only intercept bare Space (no modifiers like Cmd, Opt, Ctrl)
-            guard event.keyCode == 49,
-                  event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [] else {
+            // Only intercept bare keys (no modifiers like Cmd, Opt, Ctrl)
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [] else {
                 return event
             }
 
-            // If the first responder is a text view, let Space type normally
+            // If the first responder is a text view, let keys type normally
             if let responder = event.window?.firstResponder,
                responder is NSTextView {
                 return event
             }
 
-            // Otherwise toggle recording
-            if !appState.isTranscribing {
-                toggleRecording()
+            guard !appState.isTranscribing else { return event }
+
+            // Space key: record/stop
+            if event.keyCode == 49 {
+                if appState.isRecording {
+                    // Stop any active recording (regular or append)
+                    if isAppendMode {
+                        toggleAppendRecording()
+                    } else {
+                        toggleRecording()
+                    }
+                } else {
+                    toggleRecording()
+                }
+                return nil
             }
-            return nil // consume the event
+
+            // A key: append/stop (only when content exists)
+            if event.keyCode == 0 && hasContent {
+                if appState.isRecording {
+                    // Stop any active recording
+                    if isAppendMode {
+                        toggleAppendRecording()
+                    } else {
+                        toggleRecording()
+                    }
+                } else {
+                    toggleAppendRecording()
+                }
+                return nil
+            }
+
+            // R key: refine
+            if event.keyCode == 15 && !appState.isRecording && !appState.isRefining && !appState.transcribedText.isEmpty {
+                refineText()
+                return nil
+            }
+
+            return event
         }
     }
 
