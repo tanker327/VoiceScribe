@@ -159,6 +159,7 @@ struct SettingsView: View {
 
             Section("Automation") {
                 Toggle("Auto-refine after recording stops", isOn: $appState.autoRefineOnStop)
+                Toggle("Auto-copy transcription to clipboard", isOn: $appState.autoCopyOnTranscribe)
                 Toggle("Auto-copy refined text to clipboard", isOn: $appState.autoCopyOnRefine)
             }
 

@@ -28,8 +28,9 @@ class AppState: ObservableObject {
 
     // --- Editor Settings ---
     @AppStorage("fontSize")          var fontSize: Double = 16
-    @AppStorage("autoRefineOnStop")  var autoRefineOnStop: Bool = false
-    @AppStorage("autoCopyOnRefine")  var autoCopyOnRefine: Bool = false
+    @AppStorage("autoRefineOnStop")       var autoRefineOnStop: Bool = false
+    @AppStorage("autoCopyOnTranscribe")  var autoCopyOnTranscribe: Bool = true
+    @AppStorage("autoCopyOnRefine")      var autoCopyOnRefine: Bool = true
 
     // --- Runtime State ---
     @Published var isRecording = false
@@ -137,7 +138,7 @@ enum RefinementMode: String, CaseIterable, Identifiable {
     case email      = "Email Draft"
     case summary    = "Summarize"
     case technical  = "Technical Writing"
-    case translate  = "Translate to English"
+    case translate  = "Translate EN ↔ CN"
     case custom     = "Custom Prompt"
 
     var id: String { rawValue }
@@ -201,8 +202,10 @@ enum RefinementMode: String, CaseIterable, Identifiable {
             """
         case .translate:
             return """
-            Translate this transcription to natural, fluent English. \
-            If it's already in English, just clean it up. Return ONLY the result.
+            Detect the language of this transcription. \
+            If it is in Chinese, translate it to natural, fluent English. \
+            If it is in English, translate it to natural, fluent Simplified Chinese. \
+            Return ONLY the translated text.
             """
         case .custom:
             return ""
@@ -215,9 +218,9 @@ enum RefinementMode: String, CaseIterable, Identifiable {
 struct TranscriptionEntry: Identifiable, Codable {
     let id: UUID
     let date: Date
-    let rawText: String
-    let refinedText: String?
-    let mode: String
+    var rawText: String
+    var refinedText: String?
+    var mode: String
     let sttProvider: String
 
     init(rawText: String, refinedText: String? = nil, mode: String = "cleanup", sttProvider: String = "") {

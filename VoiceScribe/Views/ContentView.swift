@@ -9,6 +9,10 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var showError = false
     @State private var alwaysOnTop = false
+    @State private var isAppendMode = false
+    @State private var currentHistoryEntryID: UUID?
+    @State private var isLongPressing = false
+    @State private var pressStartTime: Date?
     @State private var spaceKeyMonitor: Any?
     @State private var mouseMonitor: Any?
 
@@ -259,17 +263,27 @@ struct ContentView: View {
 
     private var actionBar: some View {
         HStack(spacing: 10) {
-            // Record
-            Button(action: toggleRecording) {
-                Label(appState.isRecording ? "Stop" : "Record",
-                      systemImage: appState.isRecording ? "stop.fill" : "mic.fill")
-                    .fontWeight(.medium)
-            }
+            // Record / Stop / Abort
+            recordButton(
+                isActive: appState.isRecording && !isAppendMode,
+                label: "Record",
+                icon: "mic.fill",
+                tint: .accentColor,
+                tapAction: toggleRecording,
+                disabled: appState.isTranscribing || (appState.isRecording && isAppendMode)
+            )
             .keyboardShortcut("r", modifiers: .option)
-            .controlSize(.large)
-            .buttonStyle(.bordered)
-            .tint(appState.isRecording ? .red : .accentColor)
-            .disabled(appState.isTranscribing)
+
+            // Append / Stop / Abort
+            recordButton(
+                isActive: appState.isRecording && isAppendMode,
+                label: "Append",
+                icon: "plus.circle.fill",
+                tint: .orange,
+                tapAction: toggleAppendRecording,
+                disabled: appState.isTranscribing || (appState.isRecording && !isAppendMode)
+            )
+            .keyboardShortcut("a", modifiers: .option)
 
             // Refine
             Button(action: refineText) {
@@ -425,26 +439,28 @@ struct ContentView: View {
 
     private func toggleRecording() {
         if appState.isRecording {
+            isLongPressing = false
+            pressStartTime = nil
             stopAndTranscribe()
         } else {
+            isAppendMode = false
             startRecording()
         }
     }
 
-    private func startRecording() {
-        // Save current text to history before clearing
-        if !appState.transcribedText.isEmpty {
-            let entry = TranscriptionEntry(
-                rawText: appState.transcribedText,
-                refinedText: appState.refinedText.isEmpty ? nil : appState.refinedText,
-                mode: appState.refinementMode.rawValue,
-                sttProvider: appState.sttProvider.rawValue
-            )
-            appState.history.insert(entry, at: 0)
-            if appState.history.count > 50 { appState.history = Array(appState.history.prefix(50)) }
-            print("[History] Saved entry to history (\(entry.rawText.prefix(50))...)")
+    private func toggleAppendRecording() {
+        if appState.isRecording {
+            isLongPressing = false
+            pressStartTime = nil
+            stopAndTranscribe()
+        } else {
+            isAppendMode = true
+            startAppendRecording()
         }
+    }
 
+    private func startRecording() {
+        currentHistoryEntryID = nil
         appState.refinedText = ""
         appState.showingRefined = false
         appState.transcribedText = ""
@@ -453,6 +469,19 @@ struct ContentView: View {
             try recorder.startRecording()
             appState.isRecording = true
             appState.statusMessage = "Recording…"
+        } catch {
+            showErrorAlert(error.localizedDescription)
+        }
+    }
+
+    private func startAppendRecording() {
+        appState.refinedText = ""
+        appState.showingRefined = false
+
+        do {
+            try recorder.startRecording()
+            appState.isRecording = true
+            appState.statusMessage = "Recording (append)…"
         } catch {
             showErrorAlert(error.localizedDescription)
         }
@@ -481,10 +510,35 @@ struct ContentView: View {
                 )
 
                 await MainActor.run {
-                    appState.transcribedText = text
+                    if isAppendMode && !appState.transcribedText.isEmpty {
+                        appState.transcribedText += "\n" + text
+                        // Update existing history entry with appended text
+                        if let entryID = currentHistoryEntryID,
+                           let idx = appState.history.firstIndex(where: { $0.id == entryID }) {
+                            appState.history[idx].rawText = appState.transcribedText
+                        }
+                    } else {
+                        appState.transcribedText = text
+                        // Create a new history entry immediately
+                        let entry = TranscriptionEntry(
+                            rawText: text,
+                            mode: appState.refinementMode.rawValue,
+                            sttProvider: appState.sttProvider.rawValue
+                        )
+                        appState.history.insert(entry, at: 0)
+                        if appState.history.count > 50 { appState.history = Array(appState.history.prefix(50)) }
+                        currentHistoryEntryID = entry.id
+                    }
+                    isAppendMode = false
                     appState.isTranscribing = false
                     appState.statusMessage = "Transcribed ✓"
                     recorder.cleanupTempFile()
+
+                    // Auto-copy transcription to clipboard
+                    if appState.autoCopyOnTranscribe && !appState.autoRefineOnStop {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(appState.transcribedText, forType: .string)
+                    }
 
                     if appState.autoRefineOnStop {
                         refineText()
@@ -492,6 +546,7 @@ struct ContentView: View {
                 }
             } catch {
                 await MainActor.run {
+                    isAppendMode = false
                     appState.isTranscribing = false
                     appState.statusMessage = "Transcription failed"
                     recorder.cleanupTempFile()
@@ -532,13 +587,18 @@ struct ContentView: View {
                     appState.isRefining = false
                     appState.statusMessage = "Refined ✓"
 
+                    // Update history entry with refined text
+                    if let entryID = currentHistoryEntryID,
+                       let idx = appState.history.firstIndex(where: { $0.id == entryID }) {
+                        appState.history[idx].refinedText = refined
+                        appState.history[idx].mode = appState.refinementMode.rawValue
+                    }
+
                     // Auto-copy
                     if appState.autoCopyOnRefine {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(refined, forType: .string)
                     }
-
-
                 }
             } catch {
                 await MainActor.run {
@@ -564,11 +624,89 @@ struct ContentView: View {
         appState.refinedText = ""
         appState.showingRefined = false
         appState.statusMessage = "Ready"
+        currentHistoryEntryID = nil
     }
 
     private func showErrorAlert(_ message: String) {
         errorMessage = message
         showError = true
+    }
+
+    // MARK: - Record Button (with long-press abort)
+
+    private func recordButton(
+        isActive: Bool,
+        label: String,
+        icon: String,
+        tint: Color,
+        tapAction: @escaping () -> Void,
+        disabled: Bool
+    ) -> some View {
+        let buttonLabel: String
+        let buttonIcon: String
+        let buttonTint: Color
+
+        if isActive && isLongPressing {
+            buttonLabel = "Abort"
+            buttonIcon = "xmark.circle.fill"
+            buttonTint = .gray
+        } else if isActive {
+            buttonLabel = "Stop"
+            buttonIcon = "stop.fill"
+            buttonTint = .red
+        } else {
+            buttonLabel = label
+            buttonIcon = icon
+            buttonTint = tint
+        }
+
+        return Label(buttonLabel, systemImage: buttonIcon)
+            .fontWeight(.medium)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(buttonTint.opacity(isLongPressing ? 0.15 : 0.0))
+            )
+            .foregroundStyle(disabled ? .secondary : buttonTint)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !disabled, isActive, pressStartTime == nil else { return }
+                        pressStartTime = Date()
+                        // Schedule the visual transition to "Abort" after 2 seconds
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                            guard pressStartTime != nil else { return }
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isLongPressing = true
+                            }
+                        }
+                    }
+                    .onEnded { _ in
+                        guard !disabled else { return }
+                        let held = pressStartTime.map { Date().timeIntervalSince($0) } ?? 0
+                        pressStartTime = nil
+
+                        if isActive && held >= 2.0 {
+                            abortRecording()
+                        } else if !isLongPressing {
+                            tapAction()
+                        }
+                        isLongPressing = false
+                    }
+            )
+            .opacity(disabled ? 0.4 : 1.0)
+    }
+
+    private func abortRecording() {
+        _ = recorder.stopRecording()
+        recorder.cleanupTempFile()
+        appState.isRecording = false
+        appState.statusMessage = "Recording aborted"
+        isAppendMode = false
+        isLongPressing = false
+        pressStartTime = nil
     }
 
     // MARK: - Editor Field
