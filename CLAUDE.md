@@ -47,17 +47,18 @@ User taps Record → AudioRecorderService (AVAudioEngine → 16kHz mono PCM WAV)
 - **`App/VoiceScribeApp.swift`** — Entry point. Creates the main window and Settings window. Injects `AppState` as `@EnvironmentObject`.
 - **`Models/AppState.swift`** — Single `@MainActor ObservableObject` holding all app state. Uses `@AppStorage` for persisted settings and `@Published` for runtime state. Defines enums: `STTProvider`, `AIProvider`, `RefinementMode`, and the `TranscriptionEntry` history model. Includes `hasAPIKey(for:)` helper to check provider key availability.
 - **`Services/AudioRecorderService.swift`** — `AVAudioEngine`-based recorder. Installs a tap on the input node, downsamples to 16kHz mono PCM via `AVAudioConverter`, writes to a temp WAV file. Thread-safe file access with serial `DispatchQueue`.
+- **`Services/KeychainHelper.swift`** — Enum with static methods for secure API key storage via macOS Keychain (Security framework). Stores keys under service `"com.voicescribe"`. Includes one-time migration from UserDefaults to Keychain on first launch (controlled by `keychainMigrationDone` in `@AppStorage`).
 - **`Services/STTService.swift`** — Singleton. Builds multipart/form-data requests for the OpenAI transcriptions API (or compatible local endpoint). Uses different field names: `"video"` for local, `"file"` for OpenAI.
 - **`Services/AIService.swift`** — Singleton. Handles Claude (Anthropic Messages API with `x-api-key` header), OpenAI (Chat Completions with Bearer token), and xAI (same format as OpenAI). Manual JSON serialization, no Codable models. Supports `fetchModels()` for dynamic model loading via `/v1/models`.
-- **`Views/ContentView.swift`** — Main UI with HSplitView (main panel + history sidebar). Contains status bar, controls bar, text editor (raw/refined toggle), action bar with audio level bars, toolbar with always-on-top pin and appearance toggle. Installs `NSEvent` local monitors for bare keys (Space, A, R) when editor is not focused.
+- **`Views/ContentView.swift`** — Main UI with HSplitView (main panel + history sidebar). Contains status bar (shows STT/AI provider badges, input device name, word/char count), controls bar, text editor (raw/refined toggle), action bar with 16-bar audio level spectrum, toolbar with always-on-top pin, settings link, and appearance toggle. Installs `NSEvent` local monitors for bare keys (Space, A, R) when editor is not focused. Mouse monitor resigns editor focus on outside clicks.
 - **`Views/SettingsView.swift`** — Three-tab settings: API Keys (all provider keys), Transcription (STT provider, local endpoint, language), AI & General (AI provider/model/mode, editor, automation, shortcuts, about). Caches fetched models per provider.
 
 ### Important patterns
 
 - **No Codable for API responses** — Both `STTService` and `AIService` parse JSON manually via `JSONSerialization`. Keep this consistent unless refactoring.
 - **Singletons for services** — `STTService.shared` and `AIService.shared`. `AudioRecorderService` is a `@StateObject` in `ContentView`.
-- **All settings persisted via `@AppStorage`** — stored in UserDefaults. No custom persistence layer.
-- **History is in-memory only** (`@Published var history`) — capped at 50 entries, not persisted across launches.
+- **API keys stored in Keychain** — via `KeychainHelper`. Auto-migrated from UserDefaults on first launch. Other settings remain in `@AppStorage`/UserDefaults.
+- **History is in-memory only** (`@Published var history`) — capped at 50 entries, not persisted across launches. Individual entries can be deleted from the sidebar.
 - **Logging** — Services use `print()` with prefixes: `[STT]`, `[AIService]`, `[History]`.
 - **Entitlements required**: App Sandbox, Audio Input, Outgoing Network (client), User-selected file read-write.
 
