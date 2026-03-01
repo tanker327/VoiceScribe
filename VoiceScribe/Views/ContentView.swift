@@ -1,6 +1,4 @@
 import SwiftUI
-import STTextViewSwiftUI
-import STTextViewSwiftUICommon
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
@@ -188,7 +186,7 @@ struct ContentView: View {
             .padding(.vertical, 5)
             .background(Color.accentColor.opacity(0.07))
 
-            StyledTextView(text: $appState.refinedText, fontSize: appState.fontSize)
+            editorField(text: $appState.refinedText)
         }
     }
 
@@ -209,7 +207,7 @@ struct ContentView: View {
                 .background(Color(nsColor: .controlBackgroundColor).opacity(0.25))
             }
 
-            StyledTextView(text: $appState.transcribedText, fontSize: appState.fontSize)
+            editorField(text: $appState.transcribedText)
         }
     }
 
@@ -558,38 +556,15 @@ struct ContentView: View {
         errorMessage = message
         showError = true
     }
-}
 
-// MARK: - Styled Text View (STTextView wrapper)
+    // MARK: - Editor Field
 
-/// Bridges between AppState's String bindings and STTextView's AttributedString API.
-struct StyledTextView: View {
-    @Binding var text: String
-    var fontSize: Double
-
-    @State private var attributedText = AttributedString()
-    @State private var selection: NSRange?
-
-    var body: some View {
-        TextView(
-            text: $attributedText,
-            selection: $selection,
-            options: [.wrapLines, .highlightSelectedLine]
-        )
-        .textViewFont(.systemFont(ofSize: CGFloat(fontSize)))
-        .onAppear {
-            attributedText = AttributedString(text)
-        }
-        .onChange(of: text) { _, newValue in
-            if String(attributedText.characters) != newValue {
-                attributedText = AttributedString(newValue)
-            }
-        }
-        .onChange(of: attributedText) { _, newValue in
-            let plain = String(newValue.characters)
-            if text != plain {
-                text = plain
-            }
-        }
+    private func editorField(text: Binding<String>) -> some View {
+        TextEditor(text: text)
+            .font(.system(size: CGFloat(appState.fontSize), weight: .regular, design: .default))
+            .lineSpacing(4)
+            .scrollContentBackground(.hidden)
+            .padding(12)
+            .background(Color(nsColor: .textBackgroundColor))
     }
 }

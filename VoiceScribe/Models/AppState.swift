@@ -3,6 +3,7 @@ import Combine
 
 // MARK: - App State
 
+@MainActor
 class AppState: ObservableObject {
     // --- STT Settings ---
     @AppStorage("sttProvider")       var sttProvider: STTProvider = .gpt4oTranscribe
@@ -26,7 +27,7 @@ class AppState: ObservableObject {
     @AppStorage("refinementMode")    var refinementMode: RefinementMode = .cleanup
 
     // --- Editor Settings ---
-    @AppStorage("fontSize")          var fontSize: Double = 14
+    @AppStorage("fontSize")          var fontSize: Double = 16
     @AppStorage("autoRefineOnStop")  var autoRefineOnStop: Bool = false
     @AppStorage("autoCopyOnRefine")  var autoCopyOnRefine: Bool = false
 
@@ -39,7 +40,6 @@ class AppState: ObservableObject {
     @Published var refinedText = ""
     @Published var showingRefined = false
     @Published var history: [TranscriptionEntry] = []
-    @Published var audioLevel: Float = 0.0
 
     /// Returns the API key for the currently selected AI provider
     var currentAIApiKey: String {

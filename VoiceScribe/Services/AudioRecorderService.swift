@@ -9,7 +9,10 @@ class AudioRecorderService: ObservableObject {
     private var audioEngine = AVAudioEngine()
     private var audioFile: AVAudioFile?
     private var tempFileURL: URL?
-    private var levelTimer: Timer?
+
+    /// Serial queue protecting `audioFile` from concurrent access between
+    /// the real-time audio tap callback and `stopRecording()`.
+    private let audioFileQueue = DispatchQueue(label: "com.voicescribe.audiofile")
 
     // MARK: - Public API
 
@@ -45,16 +48,21 @@ class AudioRecorderService: ObservableObject {
         )
 
         // Install tap — downsample to 16kHz mono for Whisper
-        let desiredFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-        let converter = AVAudioConverter(from: recordingFormat, to: desiredFormat)!
+        guard let desiredFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false) else {
+            throw RecorderError.formatNotSupported
+        }
+        guard let converter = AVAudioConverter(from: recordingFormat, to: desiredFormat) else {
+            throw RecorderError.formatNotSupported
+        }
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
-            guard let self, let audioFile = self.audioFile else { return }
+            guard let self else { return }
 
             let frameCount = AVAudioFrameCount(
                 Double(buffer.frameLength) * (16000.0 / recordingFormat.sampleRate)
             )
-            guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: desiredFormat, frameCapacity: frameCount) else { return }
+            guard frameCount > 0,
+                  let convertedBuffer = AVAudioPCMBuffer(pcmFormat: desiredFormat, frameCapacity: frameCount) else { return }
 
             var error: NSError?
             converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
@@ -63,7 +71,10 @@ class AudioRecorderService: ObservableObject {
             }
 
             if error == nil, convertedBuffer.frameLength > 0 {
-                try? audioFile.write(from: convertedBuffer)
+                // Write to file on a serial queue to avoid racing with stopRecording()
+                self.audioFileQueue.sync {
+                    try? self.audioFile?.write(from: convertedBuffer)
+                }
 
                 // Compute audio level (RMS) for UI
                 let channelData = convertedBuffer.floatChannelData?[0]
@@ -88,7 +99,10 @@ class AudioRecorderService: ObservableObject {
     func stopRecording() -> URL? {
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
-        audioFile = nil
+        // Nil out audioFile on the same serial queue to ensure no in-flight writes
+        audioFileQueue.sync {
+            audioFile = nil
+        }
         isRecording = false
         audioLevel = 0
         return tempFileURL
@@ -110,9 +124,14 @@ class AudioRecorderService: ObservableObject {
 
     enum RecorderError: LocalizedError {
         case noInputDevice
+        case formatNotSupported
+
         var errorDescription: String? {
             switch self {
-            case .noInputDevice: return "No audio input device found."
+            case .noInputDevice:
+                return "No audio input device found."
+            case .formatNotSupported:
+                return "Audio format conversion is not supported for the current input device."
             }
         }
     }
