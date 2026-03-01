@@ -49,7 +49,7 @@ User taps Record → AudioRecorderService (AVAudioEngine → 16kHz mono PCM WAV)
 - **`Services/AudioRecorderService.swift`** — `AVAudioEngine`-based recorder. Installs a tap on the input node, downsamples to 16kHz mono PCM via `AVAudioConverter`, writes to a temp WAV file. Thread-safe file access with serial `DispatchQueue`.
 - **`Services/STTService.swift`** — Singleton. Builds multipart/form-data requests for the OpenAI transcriptions API (or compatible local endpoint). Uses different field names: `"video"` for local, `"file"` for OpenAI.
 - **`Services/AIService.swift`** — Singleton. Handles Claude (Anthropic Messages API with `x-api-key` header), OpenAI (Chat Completions with Bearer token), and xAI (same format as OpenAI). Manual JSON serialization, no Codable models. Supports `fetchModels()` for dynamic model loading via `/v1/models`.
-- **`Views/ContentView.swift`** — Main UI with HSplitView (main panel + history sidebar). Contains status bar, controls bar, text editor (raw/refined toggle), action bar, toolbar with always-on-top pin. Installs `NSEvent` local monitors for Space key (record/stop when editor not focused).
+- **`Views/ContentView.swift`** — Main UI with HSplitView (main panel + history sidebar). Contains status bar, controls bar, text editor (raw/refined toggle), action bar with audio level bars, toolbar with always-on-top pin and appearance toggle. Installs `NSEvent` local monitors for bare keys (Space, A, R) when editor is not focused.
 - **`Views/SettingsView.swift`** — Three-tab settings: API Keys (all provider keys), Transcription (STT provider, local endpoint, language), AI & General (AI provider/model/mode, editor, automation, shortcuts, about). Caches fetched models per provider.
 
 ### Important patterns
@@ -79,8 +79,13 @@ Three backends via `AIProvider` enum:
 
 | Shortcut | Action |
 |----------|--------|
-| Space | Start / Stop recording (when editor not focused) |
+| Space | Start / Stop recording (bare key, when editor not focused) |
+| A | Append recording / Stop (bare key, when editor not focused and content exists) |
+| R | Refine transcription (bare key, when editor not focused) |
 | ⌥R | Start / Stop recording |
+| ⌥A | Toggle append recording |
 | ⌥E | Refine transcription |
 | ⌥C | Copy current text |
 | ⌘⌫ | Clear editor |
+
+Bare keys (Space, A, R) are implemented via `NSEvent` local monitors and only activate when the text editor is not focused.
