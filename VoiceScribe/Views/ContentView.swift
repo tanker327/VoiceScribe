@@ -11,6 +11,9 @@ struct ContentView: View {
     @State private var alwaysOnTop = false
     @State private var isAppendMode = false
     @State private var currentHistoryEntryID: UUID?
+    @State private var textBeforeRecording: String = ""
+    @State private var transcriptionTask: Task<Void, Never>?
+    @State private var refinementTask: Task<Void, Never>?
     @State private var spaceKeyMonitor: Any?
     @State private var mouseMonitor: Any?
 
@@ -505,6 +508,7 @@ struct ContentView: View {
 
     private func startRecording() {
         currentHistoryEntryID = nil
+        textBeforeRecording = appState.transcribedText
         appState.refinedText = ""
         appState.showingRefined = false
         appState.transcribedText = ""
@@ -519,6 +523,7 @@ struct ContentView: View {
     }
 
     private func startAppendRecording() {
+        textBeforeRecording = appState.transcribedText
         appState.refinedText = ""
         appState.showingRefined = false
 
@@ -542,7 +547,8 @@ struct ContentView: View {
         appState.isTranscribing = true
         appState.statusMessage = "Transcribing…"
 
-        Task {
+        transcriptionTask?.cancel()
+        transcriptionTask = Task {
             do {
                 let text = try await STTService.shared.transcribe(
                     fileURL: audioURL,
@@ -552,6 +558,8 @@ struct ContentView: View {
                     localModel: appState.localWhisperModel,
                     language: appState.sttLanguage
                 )
+
+                guard !Task.isCancelled else { return }
 
                 await MainActor.run {
                     if isAppendMode && !appState.transcribedText.isEmpty {
@@ -589,6 +597,7 @@ struct ContentView: View {
                     }
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     isAppendMode = false
                     appState.isTranscribing = false
@@ -615,7 +624,8 @@ struct ContentView: View {
         appState.isRefining = true
         appState.statusMessage = "Refining…"
 
-        Task {
+        refinementTask?.cancel()
+        refinementTask = Task {
             do {
                 let refined = try await AIService.shared.refine(
                     text: appState.transcribedText,
@@ -624,6 +634,8 @@ struct ContentView: View {
                     apiKey: apiKey,
                     model: appState.aiModel
                 )
+
+                guard !Task.isCancelled else { return }
 
                 await MainActor.run {
                     appState.refinedText = refined
@@ -645,6 +657,7 @@ struct ContentView: View {
                     }
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     appState.isRefining = false
                     appState.statusMessage = "Refinement failed"
@@ -727,15 +740,16 @@ struct ContentView: View {
     }
 
     private func abortRecording() {
+        transcriptionTask?.cancel()
+        refinementTask?.cancel()
         _ = recorder.stopRecording()
         recorder.cleanupTempFile()
         appState.isRecording = false
         appState.statusMessage = "Recording aborted"
         isAppendMode = false
-        appState.transcribedText = ""
+        appState.transcribedText = textBeforeRecording
         appState.refinedText = ""
         appState.showingRefined = false
-        currentHistoryEntryID = nil
     }
 
     // MARK: - Editor Field
@@ -752,6 +766,7 @@ struct ContentView: View {
     // MARK: - Event Monitors
 
     private func installSpaceKeyMonitor() {
+        removeSpaceKeyMonitor()
         spaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             // Only intercept bare keys (no modifiers like Cmd, Opt, Ctrl)
             guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [] else {
@@ -814,6 +829,7 @@ struct ContentView: View {
     }
 
     private func installMouseMonitor() {
+        removeMouseMonitor()
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
             guard let window = event.window,
                   let firstResponder = window.firstResponder,

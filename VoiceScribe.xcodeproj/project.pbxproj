@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4E8D000B2F53B3000076F7D1 /* STTextView in Frameworks */ = {isa = PBXBuildFile; productRef = 4E8D000A2F53B3000076F7D1 /* STTextView */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		4E8DFF632F5394EE0076F7D1 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -59,10 +63,6 @@
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
-
-/* Begin PBXBuildFile section */
-		4E8D000B2F53B3000076F7D1 /* STTextView in Frameworks */ = {isa = PBXBuildFile; productRef = 4E8D000A2F53B3000076F7D1 /* STTextView */; };
-/* End PBXBuildFile section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		4E8DFF522F5394EC0076F7D1 /* Frameworks */ = {

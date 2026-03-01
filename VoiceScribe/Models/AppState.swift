@@ -5,9 +5,19 @@ import Combine
 
 @MainActor
 class AppState: ObservableObject {
+    // --- API Keys (stored in Keychain) ---
+    @Published var openAIAPIKey: String = "" {
+        didSet { KeychainHelper.save(key: "openAIAPIKey", value: openAIAPIKey) }
+    }
+    @Published var claudeAPIKey: String = "" {
+        didSet { KeychainHelper.save(key: "claudeAPIKey", value: claudeAPIKey) }
+    }
+    @Published var xaiAPIKey: String = "" {
+        didSet { KeychainHelper.save(key: "xaiAPIKey", value: xaiAPIKey) }
+    }
+
     // --- STT Settings ---
     @AppStorage("sttProvider")       var sttProvider: STTProvider = .gpt4oTranscribe
-    @AppStorage("openAIAPIKey")      var openAIAPIKey: String = ""
     @AppStorage("localWhisperHost")  var localWhisperHost: String = "192.168.10.110"
     @AppStorage("localWhisperPort")  var localWhisperPort: String = "8000"
     @AppStorage("localWhisperPath")  var localWhisperPath: String = "/api/transcribe"
@@ -21,8 +31,6 @@ class AppState: ObservableObject {
 
     // --- AI Refinement Settings ---
     @AppStorage("aiProvider")        var aiProvider: AIProvider = .claude
-    @AppStorage("claudeAPIKey")      var claudeAPIKey: String = ""
-    @AppStorage("xaiAPIKey")         var xaiAPIKey: String = ""
     @AppStorage("aiModel")           var aiModel: String = "claude-sonnet-4-20250514"
     @AppStorage("refinementMode")    var refinementMode: RefinementMode = .cleanup
 
@@ -34,6 +42,29 @@ class AppState: ObservableObject {
 
     /// Appearance: "system", "light", or "dark"
     @AppStorage("appAppearance")     var appAppearance: String = "system"
+
+    // --- Keychain Migration ---
+    @AppStorage("keychainMigrationDone") private var keychainMigrationDone: Bool = false
+
+    init() {
+        // One-time migration from UserDefaults to Keychain
+        if !keychainMigrationDone {
+            let defaults = UserDefaults.standard
+            for key in ["openAIAPIKey", "claudeAPIKey", "xaiAPIKey"] {
+                if let value = defaults.string(forKey: key), !value.isEmpty {
+                    KeychainHelper.save(key: key, value: value)
+                    defaults.removeObject(forKey: key)
+                    print("[Keychain] Migrated \(key) from UserDefaults to Keychain")
+                }
+            }
+            keychainMigrationDone = true
+        }
+
+        // Load keys from Keychain
+        openAIAPIKey = KeychainHelper.load(key: "openAIAPIKey")
+        claudeAPIKey = KeychainHelper.load(key: "claudeAPIKey")
+        xaiAPIKey = KeychainHelper.load(key: "xaiAPIKey")
+    }
 
     // --- Runtime State ---
     @Published var isRecording = false
