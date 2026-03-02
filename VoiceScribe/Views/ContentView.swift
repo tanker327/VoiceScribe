@@ -789,6 +789,8 @@ struct ContentView: View {
             .scrollContentBackground(.hidden)
             .padding(12)
             .background(Color(nsColor: .textBackgroundColor))
+            .disabled(appState.isRecording)
+            .allowsHitTesting(!appState.isRecording)
     }
 
     // MARK: - Event Monitors
