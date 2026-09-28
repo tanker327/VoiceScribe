@@ -12,6 +12,9 @@ struct ContentView: View {
     @State private var isAppendMode = false
     @State private var currentHistoryEntryID: UUID?
     @State private var textBeforeRecording: String = ""
+    /// True while the editor accepts typing. Entered by double-clicking the editor, left with
+    /// Escape, a click elsewhere, or any action that replaces the text.
+    @State private var isEditingText = false
     @State private var transcriptionTask: Task<Void, Never>?
     @State private var refinementTask: Task<Void, Never>?
     @State private var toastTask: Task<Void, Never>?
@@ -87,10 +90,10 @@ struct ContentView: View {
         HStack(spacing: 8) {
             if !appState.isRecording {
                 Circle()
-                    .fill(Color.gray.opacity(0.25))
+                    .fill(isEditingText ? Color.accentColor : Color.gray.opacity(0.25))
                     .frame(width: 9, height: 9)
 
-                Text(appState.statusMessage)
+                Text(isEditingText ? "Editing · Esc to finish" : appState.statusMessage)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -214,7 +217,7 @@ struct ContentView: View {
             Image(systemName: "mic.badge.plus")
                 .font(.system(size: 38))
                 .foregroundStyle(.secondary.opacity(0.35))
-            Text("Press Record or start typing")
+            Text("Press Record or double-click to type")
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary.opacity(0.5))
             Text("Space Record · A Append · R Refine · ⌥C Copy")
@@ -527,6 +530,7 @@ struct ContentView: View {
 
     private func startRecording() {
         guard canStartRecording else { return }
+        endEditing()
         refinementTask?.cancel()
         currentHistoryEntryID = nil
         textBeforeRecording = appState.transcribedText
@@ -545,6 +549,7 @@ struct ContentView: View {
 
     private func startAppendRecording() {
         guard canStartRecording else { return }
+        endEditing()
         refinementTask?.cancel()
         textBeforeRecording = appState.transcribedText
         appState.refinedText = ""
@@ -633,6 +638,7 @@ struct ContentView: View {
 
     private func refineText(with mode: RefinementMode) {
         guard canRefine else { return }
+        endEditing()
 
         appState.refinementMode = mode
 
@@ -658,7 +664,8 @@ struct ContentView: View {
                     systemPrompt: prompt,
                     provider: appState.aiProvider,
                     apiKey: apiKey,
-                    model: appState.aiModel
+                    baseURL: appState.currentAIBaseURL,
+                    model: appState.currentAIModel
                 )
                 guard !Task.isCancelled else { return }
 
@@ -710,6 +717,7 @@ struct ContentView: View {
         // or overwrite the clipboard. The tasks' defer blocks also reset these flags.
         transcriptionTask?.cancel()
         refinementTask?.cancel()
+        endEditing()
         appState.isTranscribing = false
         appState.isRefining = false
         appState.transcribedText = ""
@@ -785,14 +793,28 @@ struct ContentView: View {
     // MARK: - Editor Field
 
     private func editorField(text: Binding<String>) -> some View {
-        TextEditor(text: text)
-            .font(.system(size: CGFloat(appState.fontSize), weight: .regular, design: .default))
-            .lineSpacing(4)
-            .scrollContentBackground(.hidden)
-            .padding(12)
-            .background(Color(nsColor: .textBackgroundColor))
-            .disabled(appState.isRecording)
-            .allowsHitTesting(!appState.isRecording)
+        TranscriptEditor(
+            text: text,
+            isEditing: $isEditingText,
+            isEnabled: !appState.isRecording,
+            fontSize: CGFloat(appState.fontSize)
+        )
+        .overlay {
+            if isEditingText {
+                Rectangle()
+                    .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1.5)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// Leaves edit mode: the editor goes back to read-only and gives up focus so the bare keys
+    /// work again. Safe to call when not editing.
+    private func endEditing() {
+        isEditingText = false
+        if let window = hostWindow, window.firstResponder is TranscriptTextView {
+            window.makeFirstResponder(nil)
+        }
     }
 
     // MARK: - Event Monitors
@@ -809,8 +831,16 @@ struct ContentView: View {
                 return event
             }
 
-            // If the first responder is a text view, let keys type normally
-            if window.firstResponder is NSTextView {
+            // An editable text view (the editor in edit mode, or the custom prompt field) gets the
+            // keys as typing. The read-only editor also takes focus on a single click, but it
+            // must not swallow the shortcuts.
+            if let textView = window.firstResponder as? NSTextView, textView.isEditable {
+                // Escape leaves edit mode, unless an input method is composing: then Escape
+                // cancels the composition and the text view must see it.
+                if event.keyCode == 53, textView is TranscriptTextView, !textView.hasMarkedText() {
+                    endEditing()
+                    return nil
+                }
                 return event
             }
 

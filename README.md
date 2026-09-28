@@ -12,8 +12,8 @@ Record your voice, transcribe with best-in-class STT, refine with AI, copy to cl
   - **GPT-4o Transcribe** — best accuracy (default)
   - **OpenAI Whisper API** — fast, reliable
   - **Local Whisper** — self-hosted, private (whisper.cpp server, faster-whisper, LocalAI, etc.)
-- **Three AI providers** — Claude (Anthropic), OpenAI, or xAI (Grok) for post-processing
-- **Built-in text editor** — edit raw or refined text, with word/character count
+- **Four AI providers** — Claude (Anthropic), OpenAI, xAI (Grok), or any OpenAI-compatible endpoint (a self-hosted vLLM, llama.cpp, Ollama, LiteLLM or AI hub server) for post-processing
+- **Built-in text editor** — double-click to edit raw or refined text, Esc to finish, with word/character count
 - **One-click copy** to clipboard
 - **9 refinement modes** — Clean Up, Formal, Casual, Bullets, Email, Summary, Technical, Translate, Custom
 - **Keyboard shortcuts** — bare keys (Space, A, R) and Option-key combos for hands-free workflow
@@ -27,7 +27,7 @@ Record your voice, transcribe with best-in-class STT, refine with AI, copy to cl
 
 - macOS 14.0 (Sonoma) or later
 - Xcode 15+
-- At least one API key (OpenAI for STT, Claude/OpenAI/xAI for refinement)
+- At least one API key (OpenAI for STT, Claude/OpenAI/xAI for refinement), or a local Whisper server plus an OpenAI-compatible endpoint for a fully self-hosted setup
 
 ## Build & Run
 
@@ -52,10 +52,11 @@ VoiceScribe/
 ├── Services/
 │   ├── AudioRecorderService.swift    # AVAudioEngine → 16kHz WAV recording
 │   ├── STTService.swift              # Multipart upload to OpenAI / local Whisper
-│   ├── AIService.swift               # Claude, OpenAI & xAI chat completions
+│   ├── AIService.swift               # Claude, OpenAI, xAI & OpenAI-compatible endpoints
 │   └── KeychainHelper.swift          # Secure API key storage via macOS Keychain
 ├── Views/
 │   ├── ContentView.swift             # Main editor, controls, history sidebar
+│   ├── TranscriptEditor.swift        # Read-only NSTextView editor, double-click to edit
 │   └── SettingsView.swift            # Tabbed settings (API Keys, Transcription, AI & General)
 ├── Info.plist                        # Microphone permission
 └── VoiceScribe.entitlements          # Sandbox, audio, network
@@ -67,7 +68,7 @@ VoiceScribe/
 Record → AudioRecorderService (AVAudioEngine → 16kHz mono PCM WAV)
   → STTService.transcribe() (multipart POST to OpenAI or local Whisper)
   → AppState.transcribedText
-  → AIService.refine() (Claude, OpenAI, or xAI)
+  → AIService.refine() (Claude, OpenAI, xAI, or an OpenAI-compatible endpoint)
   → AppState.refinedText → displayed in editor / copied to clipboard
 ```
 
@@ -114,13 +115,23 @@ In Settings > Transcription: select "Local Whisper", set the endpoint URL (e.g.,
 - Paste into **Settings > API Keys > xAI API Key**
 - Default model: `grok-3-mini`
 
+### OpenAI-compatible endpoint (self-hosted)
+- Pick **OpenAI-compatible** under **Settings > AI & General > Provider**
+- Enter the **Base URL** including the version prefix the server expects, e.g. `http://192.168.10.7:8080/v1`; the app appends `/chat/completions` and `/models`
+- The **API Key** is optional; leave it empty if the server does not check one
+- Type the **Model** id, or press **Load Models** and pick one from the server's `/models` list
+- Works with anything that speaks the OpenAI Chat Completions API: an AI hub, vLLM, llama.cpp, Ollama, LiteLLM, LM Studio
+- Plain `http://` works for IP addresses; a hostname over plain HTTP may be blocked by App Transport Security, so use an IP or `https://` there
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
-| Space | Start / Stop recording (when editor not focused) |
-| A | Append recording / Stop (when editor not focused) |
-| R | Refine transcription (when editor not focused) |
+| Double-click editor | Start editing the text (it is read-only otherwise) |
+| Esc | Finish editing; the editor is read-only again |
+| Space | Start / Stop recording (when not editing) |
+| A | Append recording / Stop (when not editing) |
+| R | Refine transcription (when not editing) |
 | Option+R | Start / Stop recording |
 | Option+A | Toggle append recording |
 | Option+E | Refine transcription |

@@ -107,10 +107,10 @@ struct SettingsView: View {
             Section("AI Refinement") {
                 Picker("Provider", selection: $appState.aiProvider) {
                     ForEach(AIProvider.allCases) { provider in
-                        if appState.hasAPIKey(for: provider) {
+                        if appState.isConfigured(provider) {
                             Text(provider.displayName).tag(provider)
                         } else {
-                            Text("\(provider.displayName) (No API key)")
+                            Text("\(provider.displayName) \(provider.requiresAPIKey ? "(No API key)" : "(No endpoint)")")
                                 .tag(provider)
                         }
                     }
@@ -122,6 +122,17 @@ struct SettingsView: View {
                     ForEach(RefinementMode.allCases) { mode in
                         Label(mode.displayName, systemImage: mode.icon).tag(mode)
                     }
+                }
+            }
+
+            if appState.aiProvider == .openAICompatible {
+                Section("OpenAI-compatible Endpoint") {
+                    TextField("Base URL", text: $appState.customAIBaseURL, prompt: Text("http://192.168.10.7:8080/v1"))
+                    SecureField("API Key", text: $appState.customAIAPIKey, prompt: Text("Optional"))
+
+                    Text("Any server that speaks the OpenAI Chat Completions API: an AI hub, vLLM, llama.cpp, Ollama, LiteLLM, LM Studio… Include the version prefix the server expects (usually /v1); the app appends /chat/completions and /models. Leave the key empty if the server does not check one.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -142,6 +153,8 @@ struct SettingsView: View {
             }
 
             Section("Keyboard Shortcuts") {
+                shortcutRow("Double-click", "Edit the text (read-only otherwise)")
+                shortcutRow("Esc", "Finish editing")
                 shortcutRow("Space", "Start / Stop recording")
                 shortcutRow("A", "Append recording / Stop")
                 shortcutRow("R", "Refine transcription")
@@ -168,9 +181,20 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .padding()
         .onChange(of: appState.aiProvider) { _, newVal in
-            appState.aiModel = newVal.defaultModel
+            // The OpenAI-compatible endpoint keeps its own model setting across switches.
+            if newVal != .openAICompatible {
+                appState.aiModel = newVal.defaultModel
+            }
             modelLoadError = nil
             availableModels = modelCache[newVal] ?? []
+        }
+        .onChange(of: appState.customAIBaseURL) { _, _ in
+            // A model list belongs to the server it came from.
+            modelCache[.openAICompatible] = nil
+            if appState.aiProvider == .openAICompatible {
+                availableModels = []
+                modelLoadError = nil
+            }
         }
     }
 
@@ -178,23 +202,31 @@ struct SettingsView: View {
 
     private var modelPickerSection: some View {
         Group {
-            if availableModels.isEmpty {
+            if appState.aiProvider == .openAICompatible {
+                // The model id is free text here; the list from /models is a helper, not a constraint.
+                HStack {
+                    TextField("Model", text: $appState.customAIModel, prompt: Text("e.g. qwen3.8-27b"))
+                    if !availableModels.isEmpty {
+                        Menu {
+                            ForEach(availableModels, id: \.self) { modelId in
+                                Button(modelId) { appState.customAIModel = modelId }
+                            }
+                        } label: {
+                            Image(systemName: "chevron.up.chevron.down")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help("Pick one of the loaded models")
+                    }
+                    loadModelsButton
+                }
+            } else if availableModels.isEmpty {
                 HStack {
                     Text("Model: \(appState.aiModel)")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button(action: loadModels) {
-                        if isLoadingModels {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 16, height: 16)
-                        } else {
-                            Label("Load Models", systemImage: "arrow.clockwise")
-                        }
-                    }
-                    .disabled(isLoadingModels || modelLoadCooldown)
-                    .font(.system(size: 11))
+                    loadModelsButton
                 }
             } else {
                 Picker("Model", selection: $appState.aiModel) {
@@ -212,6 +244,20 @@ struct SettingsView: View {
         }
     }
 
+    private var loadModelsButton: some View {
+        Button(action: loadModels) {
+            if isLoadingModels {
+                ProgressView()
+                    .scaleEffect(0.6)
+                    .frame(width: 16, height: 16)
+            } else {
+                Label("Load Models", systemImage: "arrow.clockwise")
+            }
+        }
+        .disabled(isLoadingModels || modelLoadCooldown)
+        .font(.system(size: 11))
+    }
+
     @State private var modelLoadTask: Task<Void, Never>?
     @State private var cooldownTask: Task<Void, Never>?
 
@@ -220,6 +266,7 @@ struct SettingsView: View {
 
         let provider = appState.aiProvider
         let apiKey = appState.currentAIApiKey
+        let baseURL = appState.currentAIBaseURL
 
         modelLoadError = nil
         isLoadingModels = true
@@ -227,13 +274,18 @@ struct SettingsView: View {
         modelLoadTask?.cancel()
         modelLoadTask = Task {
             do {
-                let models = try await AIService.shared.fetchModels(provider: provider, apiKey: apiKey)
+                let models = try await AIService.shared.fetchModels(provider: provider, apiKey: apiKey, baseURL: baseURL)
                 guard !Task.isCancelled else { return }
                 availableModels = models
                 modelCache[provider] = models
                 isLoadingModels = false
                 startCooldown()
-                if !models.contains(appState.aiModel), let first = models.first {
+                if provider == .openAICompatible {
+                    // Never replace a model the user typed; only fill an empty field.
+                    if appState.customAIModel.isEmpty, let first = models.first {
+                        appState.customAIModel = first
+                    }
+                } else if !models.contains(appState.aiModel), let first = models.first {
                     appState.aiModel = first
                 }
             } catch {

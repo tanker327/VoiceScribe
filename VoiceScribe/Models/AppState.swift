@@ -49,6 +49,10 @@ class AppState: ObservableObject {
     @Published var xaiAPIKey: String = "" {
         didSet { scheduleKeychainSave(key: "xaiAPIKey", value: xaiAPIKey) }
     }
+    /// Optional: self-hosted OpenAI-compatible servers often check no key at all.
+    @Published var customAIAPIKey: String = "" {
+        didSet { scheduleKeychainSave(key: "customAIAPIKey", value: customAIAPIKey) }
+    }
 
     private var keychainSaveTimers: [String: DispatchWorkItem] = [:]
 
@@ -94,6 +98,15 @@ class AppState: ObservableObject {
     }
     @Published var aiModel: String = "claude-sonnet-4-20250514" {
         didSet { UserDefaults.standard.set(aiModel, forKey: "aiModel") }
+    }
+
+    // --- OpenAI-compatible endpoint (used when aiProvider == .openAICompatible) ---
+    /// Endpoint root including the version prefix the server expects, e.g. http://192.168.10.7:8080/v1.
+    @Published var customAIBaseURL: String = "" {
+        didSet { UserDefaults.standard.set(customAIBaseURL, forKey: "customAIBaseURL") }
+    }
+    @Published var customAIModel: String = "" {
+        didSet { UserDefaults.standard.set(customAIModel, forKey: "customAIModel") }
     }
     @Published var refinementMode: RefinementMode = .cleanup {
         didSet { UserDefaults.standard.set(refinementMode.rawValue, forKey: "refinementMode") }
@@ -150,6 +163,7 @@ class AppState: ObservableObject {
         _openAIAPIKey = Published(wrappedValue: KeychainHelper.load(key: "openAIAPIKey"))
         _claudeAPIKey = Published(wrappedValue: KeychainHelper.load(key: "claudeAPIKey"))
         _xaiAPIKey = Published(wrappedValue: KeychainHelper.load(key: "xaiAPIKey"))
+        _customAIAPIKey = Published(wrappedValue: KeychainHelper.load(key: "customAIAPIKey"))
 
         // Load settings from UserDefaults (using _prop to skip didSet)
         if let raw = defaults.string(forKey: "sttProvider"),
@@ -176,6 +190,8 @@ class AppState: ObservableObject {
             _aiProvider = Published(wrappedValue: val)
         }
         if let v = defaults.string(forKey: "aiModel") { _aiModel = Published(wrappedValue: v) }
+        if let v = defaults.string(forKey: "customAIBaseURL") { _customAIBaseURL = Published(wrappedValue: v) }
+        if let v = defaults.string(forKey: "customAIModel") { _customAIModel = Published(wrappedValue: v) }
         if let raw = defaults.string(forKey: "refinementMode"),
            let val = RefinementMode(rawValue: raw) {
             _refinementMode = Published(wrappedValue: val)
@@ -246,14 +262,29 @@ class AppState: ObservableObject {
         case .claude: return claudeAPIKey
         case .openai: return openAIAPIKey
         case .xai:    return xaiAPIKey
+        case .openAICompatible: return customAIAPIKey
         }
     }
 
-    func hasAPIKey(for provider: AIProvider) -> Bool {
+    /// The model sent to the current provider. The OpenAI-compatible endpoint has its own
+    /// free-text model setting; the built-in providers share `aiModel`.
+    var currentAIModel: String {
+        aiProvider == .openAICompatible ? customAIModel : aiModel
+    }
+
+    /// The endpoint root for the current provider: built in, or the user's Base URL.
+    var currentAIBaseURL: String {
+        aiProvider == .openAICompatible ? customAIBaseURL : aiProvider.baseURL
+    }
+
+    /// Whether the provider can be used: a key for the built-in services, a Base URL for the
+    /// OpenAI-compatible endpoint (its key is optional).
+    func isConfigured(_ provider: AIProvider) -> Bool {
         switch provider {
         case .claude: return !claudeAPIKey.isEmpty
         case .openai: return !openAIAPIKey.isEmpty
         case .xai:    return !xaiAPIKey.isEmpty
+        case .openAICompatible: return !customAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
@@ -323,6 +354,9 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
     case claude = "claude"
     case openai = "openai"
     case xai    = "xai"
+    /// Any server speaking the OpenAI Chat Completions API (vLLM, llama.cpp, Ollama, LiteLLM, an
+    /// AI hub…). Its Base URL, key and model are settings on `AppState`, not properties here.
+    case openAICompatible = "openai_compatible"
 
     var id: String { rawValue }
 
@@ -331,23 +365,35 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
         case .claude: return "Claude (Anthropic)"
         case .openai: return "OpenAI"
         case .xai:    return "xAI (Grok)"
+        case .openAICompatible: return "OpenAI-compatible"
         }
     }
 
+    /// Empty for the OpenAI-compatible endpoint: its model is `AppState.customAIModel`.
     var defaultModel: String {
         switch self {
         case .claude: return "claude-sonnet-4-20250514"
         case .openai: return "gpt-4o"
         case .xai:    return "grok-3-mini"
+        case .openAICompatible: return ""
         }
     }
 
+    /// Endpoint root including the API version prefix; `AIService` appends `messages`,
+    /// `chat/completions` or `models`. Empty for the OpenAI-compatible endpoint: its root is
+    /// `AppState.customAIBaseURL`.
     var baseURL: String {
         switch self {
-        case .claude: return "https://api.anthropic.com"
-        case .openai: return "https://api.openai.com"
-        case .xai:    return "https://api.x.ai"
+        case .claude: return "https://api.anthropic.com/v1"
+        case .openai: return "https://api.openai.com/v1"
+        case .xai:    return "https://api.x.ai/v1"
+        case .openAICompatible: return ""
         }
+    }
+
+    /// The built-in services reject unauthenticated calls; a self-hosted endpoint may not check a key.
+    var requiresAPIKey: Bool {
+        self != .openAICompatible
     }
 }
 
