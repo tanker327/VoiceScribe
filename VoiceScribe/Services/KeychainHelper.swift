@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 enum KeychainHelper: Sendable {
-    private static let service = "com.voicescribe"
+    private nonisolated static let service = "com.voicescribe"
 
     nonisolated static func save(key: String, value: String) {
         let query: [String: Any] = [
@@ -55,17 +55,5 @@ enum KeychainHelper: Sendable {
             return ""
         }
         return string
-    }
-
-    static func delete(key: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        if status != errSecSuccess && status != errSecItemNotFound {
-            print("[Keychain] Failed to delete key '\(key)': \(status)")
-        }
     }
 }

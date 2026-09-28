@@ -4,9 +4,15 @@ import Combine
 
 /// Records audio from the default input device and provides WAV data for transcription.
 class AudioRecorderService: ObservableObject {
+    /// The audio level changes on every audio buffer. Keeping it in its own observable
+    /// means those updates re-render only `AudioLevelBar`, not every view observing the recorder.
+    final class LevelMeter: ObservableObject {
+        @Published var level: Float = 0.0
+    }
+
     @Published var isRecording = false
-    @Published var audioLevel: Float = 0.0
     @Published private(set) var inputDeviceName: String = "No Input"
+    let levelMeter = LevelMeter()
 
     private var audioEngine = AVAudioEngine()
     private var audioFile: AVAudioFile?
@@ -72,6 +78,9 @@ class AudioRecorderService: ObservableObject {
             return
         }
 
+        // Drop any temp file left behind by a previous attempt that failed part-way.
+        cleanupTempFile()
+
         let tempDir = FileManager.default.temporaryDirectory
         let fileURL = tempDir.appendingPathComponent(UUID().uuidString + ".wav")
         tempFileURL = fileURL
@@ -110,46 +119,37 @@ class AudioRecorderService: ObservableObject {
         }
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
-            guard let self else { return }
+            guard let self,
+                  let convertedBuffer = Self.downsample(buffer, with: converter, to: desiredFormat) else { return }
 
-            let frameCount = AVAudioFrameCount(
-                Double(buffer.frameLength) * (16000.0 / recordingFormat.sampleRate)
-            )
-            guard frameCount > 0,
-                  let convertedBuffer = AVAudioPCMBuffer(pcmFormat: desiredFormat, frameCapacity: frameCount) else { return }
-
-            var error: NSError?
-            converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
-                outStatus.pointee = .haveData
-                return buffer
+            // Write to file on a serial queue (async to avoid blocking the audio thread)
+            self.audioFileQueue.async {
+                do {
+                    try self.audioFile?.write(from: convertedBuffer)
+                } catch {
+                    print("[Recorder] Failed to write audio buffer: \(error.localizedDescription)")
+                }
             }
 
-            if error == nil, convertedBuffer.frameLength > 0 {
-                // Write to file on a serial queue (async to avoid blocking the audio thread)
-                self.audioFileQueue.async {
-                    do {
-                        try self.audioFile?.write(from: convertedBuffer)
-                    } catch {
-                        print("[Recorder] Failed to write audio buffer: \(error.localizedDescription)")
-                    }
-                }
-
-                // Compute audio level (RMS) for UI
-                let channelData = convertedBuffer.floatChannelData?[0]
-                let length = Int(convertedBuffer.frameLength)
-                if let data = channelData, length > 0 {
-                    var sumOfSquares: Float = 0
-                    for i in 0..<length { sumOfSquares += data[i] * data[i] }
-                    let rms = sqrtf(sumOfSquares / Float(length))
-                    DispatchQueue.main.async {
-                        // Smooth the level to avoid jitter
-                        self.audioLevel = self.audioLevel * 0.3 + rms * 0.7
-                    }
-                }
+            // Audio level (RMS) for the meter
+            let rms = Self.rms(of: convertedBuffer)
+            let meter = self.levelMeter
+            DispatchQueue.main.async {
+                // Smooth the level to avoid jitter
+                meter.level = meter.level * 0.3 + rms * 0.7
             }
         }
 
-        try audioEngine.start()
+        do {
+            try audioEngine.start()
+        } catch {
+            // Leave no tap or open file behind: a second installTap(onBus: 0) on the next
+            // attempt would make AVAudioEngine trap.
+            inputNode.removeTap(onBus: 0)
+            audioFileQueue.sync { audioFile = nil }
+            cleanupTempFile()
+            throw error
+        }
         isRecording = true
         print("[Recorder] Started recording to \(fileURL.lastPathComponent)")
     }
@@ -163,7 +163,7 @@ class AudioRecorderService: ObservableObject {
             audioFile = nil
         }
         isRecording = false
-        audioLevel = 0
+        levelMeter.level = 0
         print("[Recorder] Stopped recording")
         return tempFileURL
     }
@@ -189,6 +189,46 @@ class AudioRecorderService: ObservableObject {
             )
         }
         cleanupTempFile()
+    }
+
+    // MARK: - Conversion
+
+    /// Converts one tap buffer to the 16 kHz mono recording format.
+    /// Internal (not private) so the unit tests can exercise it without a live input device.
+    nonisolated static func downsample(_ buffer: AVAudioPCMBuffer,
+                                       with converter: AVAudioConverter,
+                                       to format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let ratio = format.sampleRate / buffer.format.sampleRate
+        let frameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
+        guard frameCount > 0,
+              let converted = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return nil }
+
+        // Hand the input buffer over exactly once. When resampling, the converter may ask
+        // for more input to fill the output buffer; answering with the same frames again
+        // would write duplicated audio into the WAV.
+        var delivered = false
+        var error: NSError?
+        converter.convert(to: converted, error: &error) { _, outStatus in
+            if delivered {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            delivered = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        guard error == nil, converted.frameLength > 0 else { return nil }
+        return converted
+    }
+
+    /// Root-mean-square level of the first channel; 0 for an empty buffer.
+    nonisolated static func rms(of buffer: AVAudioPCMBuffer) -> Float {
+        guard let data = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return 0 }
+        let length = Int(buffer.frameLength)
+        var sumOfSquares: Float = 0
+        for i in 0..<length { sumOfSquares += data[i] * data[i] }
+        return sqrtf(sumOfSquares / Float(length))
     }
 
     // MARK: - Errors

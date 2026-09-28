@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var toastTask: Task<Void, Never>?
     @State private var spaceKeyMonitor: Any?
     @State private var mouseMonitor: Any?
+    @State private var hostWindow: NSWindow?
 
     var body: some View {
         HSplitView {
@@ -29,6 +30,9 @@ struct ContentView: View {
             }
         }
         .toolbar { toolbarItems }
+        .background(WindowAccessor { window in
+            if hostWindow !== window { hostWindow = window }
+        })
         .onAppear {
             installSpaceKeyMonitor()
             installMouseMonitor()
@@ -122,25 +126,6 @@ struct ContentView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
         .background(Color(nsColor: .controlBackgroundColor))
-    }
-
-    private var audioLevelBar: some View {
-        HStack(spacing: 2) {
-            ForEach(0..<16, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(barColor(for: i, total: 16))
-                    .frame(width: 4, height: 16)
-                    .opacity(Float(i) / 16.0 < recorder.audioLevel * 50 ? 1 : 0.15)
-            }
-        }
-    }
-
-    private func barColor(for index: Int, total: Int = 16) -> Color {
-        let greenEnd = Int(Double(total) * 0.65)
-        let yellowEnd = Int(Double(total) * 0.85)
-        if index < greenEnd { return .green }
-        if index < yellowEnd { return .yellow }
-        return .red
     }
 
     // MARK: - Custom Prompt Bar
@@ -272,7 +257,7 @@ struct ContentView: View {
                                 .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: appState.isRecording)
                         }
 
-                    audioLevelBar
+                    AudioLevelBar(meter: recorder.levelMeter)
                 }
             }
 
@@ -320,7 +305,7 @@ struct ContentView: View {
                 .controlSize(.large)
                 .tint(.orange)
                 .keyboardShortcut("a", modifiers: .option)
-                .disabled(appState.isTranscribing || appState.isRefining)
+                .disabled(!canStartRecording)
 
                 Button(action: toggleRecording) {
                     Label("Record", systemImage: "mic.fill")
@@ -329,7 +314,7 @@ struct ContentView: View {
                 .tint(.green)
                 .controlSize(.large)
                 .keyboardShortcut("r", modifiers: .option)
-                .disabled(appState.isTranscribing || appState.isRefining)
+                .disabled(!canStartRecording)
             } else {
                 // Initial phase: Record only
                 Button(action: toggleRecording) {
@@ -393,8 +378,7 @@ struct ContentView: View {
     }
 
     private func setWindowFloating(_ floating: Bool) {
-        guard let window = NSApplication.shared.windows.first(where: { $0.isKeyWindow }) else { return }
-        window.level = floating ? .floating : .normal
+        hostWindow?.level = floating ? .floating : .normal
     }
 
     private func cycleAppearance() {
@@ -452,6 +436,8 @@ struct ContentView: View {
                         appState.transcribedText = entry.rawText
                         appState.refinedText = entry.refinedText ?? ""
                         appState.showingRefined = entry.refinedText != nil
+                        // Refine/Append must update this entry, not whichever was created last.
+                        currentHistoryEntryID = entry.id
                     }
                     .overlay(alignment: .topTrailing) {
                         Button {
@@ -471,6 +457,8 @@ struct ContentView: View {
                     }
                 }
                 .listStyle(.sidebar)
+                // Loading an entry while a result is in flight would let that result land on it.
+                .disabled(appState.isTranscribing || appState.isRefining)
             }
         }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.25))
@@ -507,6 +495,16 @@ struct ContentView: View {
         !appState.transcribedText.isEmpty || !appState.refinedText.isEmpty
     }
 
+    /// Shared by the Record/Append buttons and the bare-key monitor so they can never disagree.
+    private var canStartRecording: Bool {
+        !appState.isRecording && !appState.isTranscribing && !appState.isRefining
+    }
+
+    /// Shared by the Refine button, its menu, and the R key.
+    private var canRefine: Bool {
+        !appState.transcribedText.isEmpty && !appState.isRecording && !appState.isTranscribing && !appState.isRefining
+    }
+
     // MARK: - Actions
 
     private func toggleRecording() {
@@ -528,6 +526,8 @@ struct ContentView: View {
     }
 
     private func startRecording() {
+        guard canStartRecording else { return }
+        refinementTask?.cancel()
         currentHistoryEntryID = nil
         textBeforeRecording = appState.transcribedText
         appState.refinedText = ""
@@ -544,6 +544,8 @@ struct ContentView: View {
     }
 
     private func startAppendRecording() {
+        guard canStartRecording else { return }
+        refinementTask?.cancel()
         textBeforeRecording = appState.transcribedText
         appState.refinedText = ""
         appState.showingRefined = false
@@ -570,6 +572,13 @@ struct ContentView: View {
 
         transcriptionTask?.cancel()
         transcriptionTask = Task {
+            // Runs on success, failure and cancellation (window closed, Clear pressed),
+            // so the UI can never be left stuck in the transcribing state.
+            defer {
+                isAppendMode = false
+                appState.isTranscribing = false
+                recorder.cleanupTempFile()
+            }
             do {
                 let text = try await STTService.shared.transcribe(
                     fileURL: audioURL,
@@ -579,62 +588,51 @@ struct ContentView: View {
                     localModel: appState.localWhisperModel,
                     language: appState.sttLanguage
                 )
-
                 guard !Task.isCancelled else { return }
 
-                await MainActor.run {
-                    if isAppendMode && !appState.transcribedText.isEmpty {
-                        appState.transcribedText += "\n" + text
-                        // Update existing history entry with appended text
-                        if let entryID = currentHistoryEntryID,
-                           let idx = appState.history.firstIndex(where: { $0.id == entryID }) {
-                            appState.history[idx].rawText = appState.transcribedText
-                        }
-                    } else {
-                        appState.transcribedText = text
-                        // Create a new history entry immediately
-                        let entry = TranscriptionEntry(
-                            rawText: text,
-                            mode: appState.refinementMode,
-                            sttProvider: appState.sttProvider
-                        )
-                        appState.addHistoryEntry(entry)
-                        currentHistoryEntryID = entry.id
+                if isAppendMode && !appState.transcribedText.isEmpty {
+                    appState.transcribedText += "\n" + text
+                    // Update existing history entry with appended text
+                    if let entryID = currentHistoryEntryID,
+                       let idx = appState.history.firstIndex(where: { $0.id == entryID }) {
+                        appState.history[idx].rawText = appState.transcribedText
                     }
-                    isAppendMode = false
+                } else {
+                    appState.transcribedText = text
+                    // Create a new history entry immediately
+                    let entry = TranscriptionEntry(
+                        rawText: text,
+                        mode: appState.refinementMode,
+                        sttProvider: appState.sttProvider
+                    )
+                    appState.addHistoryEntry(entry)
+                    currentHistoryEntryID = entry.id
+                }
+                appState.statusMessage = "Transcribed ✓"
+
+                if appState.autoCopyOnTranscribe && !appState.autoRefineOnStop {
+                    copyToPasteboard(appState.transcribedText)
+                }
+
+                if appState.autoRefineOnStop {
                     appState.isTranscribing = false
-                    appState.statusMessage = "Transcribed ✓"
-                    recorder.cleanupTempFile()
-
-                    // Auto-copy transcription to clipboard
-                    if appState.autoCopyOnTranscribe && !appState.autoRefineOnStop {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(appState.transcribedText, forType: .string)
-                    }
-
-                    if appState.autoRefineOnStop {
-                        refineText()
-                    }
+                    refineText()
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    isAppendMode = false
-                    appState.isTranscribing = false
-                    appState.statusMessage = "Transcription failed"
-                    recorder.cleanupTempFile()
-                    showErrorAlert(error.localizedDescription)
-                }
+                appState.statusMessage = "Transcription failed"
+                showErrorAlert(error.localizedDescription)
             }
         }
     }
 
+    /// Refine with the mode chosen in Settings (or last picked from the split-button menu).
     private func refineText() {
-        refineText(with: .cleanup)
+        refineText(with: appState.refinementMode)
     }
 
     private func refineText(with mode: RefinementMode) {
-        guard !appState.transcribedText.isEmpty else { return }
+        guard canRefine else { return }
 
         appState.refinementMode = mode
 
@@ -652,6 +650,8 @@ struct ContentView: View {
 
         refinementTask?.cancel()
         refinementTask = Task {
+            // Runs on success, failure and cancellation so isRefining can never stay stuck.
+            defer { appState.isRefining = false }
             do {
                 let refined = try await AIService.shared.refine(
                     text: appState.transcribedText,
@@ -660,43 +660,39 @@ struct ContentView: View {
                     apiKey: apiKey,
                     model: appState.aiModel
                 )
-
                 guard !Task.isCancelled else { return }
 
-                await MainActor.run {
-                    appState.refinedText = refined
-                    appState.showingRefined = true
-                    appState.isRefining = false
-                    appState.statusMessage = "Refined ✓"
+                appState.refinedText = refined
+                appState.showingRefined = true
+                appState.statusMessage = "Refined ✓"
 
-                    // Update history entry with refined text
-                    if let entryID = currentHistoryEntryID,
-                       let idx = appState.history.firstIndex(where: { $0.id == entryID }) {
-                        appState.history[idx].refinedText = refined
-                        appState.history[idx].mode = appState.refinementMode
-                    }
+                // Update history entry with refined text
+                if let entryID = currentHistoryEntryID,
+                   let idx = appState.history.firstIndex(where: { $0.id == entryID }) {
+                    appState.history[idx].refinedText = refined
+                    appState.history[idx].mode = appState.refinementMode
+                }
 
-                    // Auto-copy
-                    if appState.autoCopyOnRefine {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(refined, forType: .string)
-                    }
+                if appState.autoCopyOnRefine {
+                    copyToPasteboard(refined)
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    appState.isRefining = false
-                    appState.statusMessage = "Refinement failed"
-                    showErrorAlert(error.localizedDescription)
-                }
+                appState.statusMessage = "Refinement failed"
+                showErrorAlert(error.localizedDescription)
             }
         }
     }
 
-    private func copyToClipboard() {
+    /// Single clipboard write path shared by the Copy button and both auto-copy settings.
+    @discardableResult
+    private func copyToPasteboard(_ text: String) -> Bool {
         NSPasteboard.general.clearContents()
-        let success = NSPasteboard.general.setString(currentText, forType: .string)
-        if success {
+        return NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func copyToClipboard() {
+        if copyToPasteboard(currentText) {
             toastTask?.cancel()
             withAnimation { showCopiedToast = true }
             toastTask = Task {
@@ -710,6 +706,12 @@ struct ContentView: View {
     }
 
     private func clearAll() {
+        // Cancel in-flight work so a late result cannot repopulate the cleared editor
+        // or overwrite the clipboard. The tasks' defer blocks also reset these flags.
+        transcriptionTask?.cancel()
+        refinementTask?.cancel()
+        appState.isTranscribing = false
+        appState.isRefining = false
         appState.transcribedText = ""
         appState.refinedText = ""
         appState.showingRefined = false
@@ -725,7 +727,7 @@ struct ContentView: View {
     // MARK: - Refine Button (with mode picker)
 
     private var refineButton: some View {
-        let isDisabled = appState.transcribedText.isEmpty || appState.isRefining || appState.isRecording
+        let isDisabled = !canRefine
 
         return HStack(spacing: 0) {
             // Refine action
@@ -798,55 +800,47 @@ struct ContentView: View {
     private func installSpaceKeyMonitor() {
         removeSpaceKeyMonitor()
         spaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Local monitors see every window in the app. Act only on the main window so
+            // Space/A/R in Settings keep operating the focused toggle or radio button.
+            guard let window = event.window, window === hostWindow else { return event }
+
             // Only intercept bare keys (no modifiers like Cmd, Opt, Ctrl)
             guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [] else {
                 return event
             }
 
             // If the first responder is a text view, let keys type normally
-            if let responder = event.window?.firstResponder,
-               responder is NSTextView {
+            if window.firstResponder is NSTextView {
                 return event
             }
 
-            guard !appState.isTranscribing else { return event }
-
-            // Space key: record/stop
-            if event.keyCode == 49 {
+            switch event.keyCode {
+            case 49: // Space: record / stop
                 if appState.isRecording {
-                    // Stop any active recording (regular or append)
-                    if isAppendMode {
-                        toggleAppendRecording()
-                    } else {
-                        toggleRecording()
-                    }
-                } else {
+                    stopAndTranscribe()
+                    return nil
+                }
+                if canStartRecording {
                     toggleRecording()
+                    return nil
                 }
-                return nil
-            }
-
-            // A key: append/stop (only when content exists)
-            if event.keyCode == 0 && hasContent {
+            case 0 where hasContent: // A: append / stop
                 if appState.isRecording {
-                    // Stop any active recording
-                    if isAppendMode {
-                        toggleAppendRecording()
-                    } else {
-                        toggleRecording()
-                    }
-                } else {
-                    toggleAppendRecording()
+                    stopAndTranscribe()
+                    return nil
                 }
-                return nil
+                if canStartRecording {
+                    toggleAppendRecording()
+                    return nil
+                }
+            case 15: // R: refine
+                if canRefine {
+                    refineText()
+                    return nil
+                }
+            default:
+                break
             }
-
-            // R key: refine
-            if event.keyCode == 15 && !appState.isRecording && !appState.isRefining && !appState.transcribedText.isEmpty {
-                refineText()
-                return nil
-            }
-
             return event
         }
     }
@@ -861,14 +855,12 @@ struct ContentView: View {
     private func installMouseMonitor() {
         removeMouseMonitor()
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
-            guard let window = event.window,
-                  let firstResponder = window.firstResponder,
-                  firstResponder is NSTextView else {
+            guard let window = event.window, window === hostWindow,
+                  let textView = window.firstResponder as? NSTextView else {
                 return event
             }
 
             // Check if the click landed inside the text view; if not, resign focus
-            guard let textView = firstResponder as? NSTextView else { return event }
             let locationInTextView = textView.convert(event.locationInWindow, from: nil)
             if !textView.bounds.contains(locationInTextView) {
                 window.makeFirstResponder(nil)
@@ -881,6 +873,64 @@ struct ContentView: View {
         if let monitor = mouseMonitor {
             NSEvent.removeMonitor(monitor)
             mouseMonitor = nil
+        }
+    }
+}
+
+// MARK: - Audio Level Bar
+
+/// Observes only the recorder's level meter, so the per-buffer level updates
+/// re-render these 16 bars and nothing else.
+private struct AudioLevelBar: View {
+    @ObservedObject var meter: AudioRecorderService.LevelMeter
+    private let barCount = 16
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<barCount, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(barColor(for: i))
+                    .frame(width: 4, height: 16)
+                    .opacity(Float(i) / Float(barCount) < meter.level * 50 ? 1 : 0.15)
+            }
+        }
+    }
+
+    private func barColor(for index: Int) -> Color {
+        let greenEnd = Int(Double(barCount) * 0.65)
+        let yellowEnd = Int(Double(barCount) * 0.85)
+        if index < greenEnd { return .green }
+        if index < yellowEnd { return .yellow }
+        return .red
+    }
+}
+
+// MARK: - Window Accessor
+
+/// Reports the NSWindow hosting this SwiftUI view, so the event monitors can be
+/// scoped to the main window instead of every window in the app.
+private struct WindowAccessor: NSViewRepresentable {
+    let onResolve: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> WindowReporterView {
+        let view = WindowReporterView()
+        view.onWindowChange = onResolve
+        return view
+    }
+
+    func updateNSView(_ nsView: WindowReporterView, context: Context) {
+        nsView.onWindowChange = onResolve
+    }
+
+    final class WindowReporterView: NSView {
+        var onWindowChange: ((NSWindow?) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            let window = self.window
+            let callback = onWindowChange
+            // Defer so SwiftUI state is not mutated during the view-hierarchy update.
+            DispatchQueue.main.async { callback?(window) }
         }
     }
 }

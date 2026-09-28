@@ -26,10 +26,7 @@ class STTService {
         print("[STT] Language: \(language)")
         print("[STT] Audio file: \(fileURL.path)")
 
-        guard let url = URL(string: endpoint) else {
-            print("[STT] ERROR: Invalid endpoint URL: \(endpoint)")
-            throw STTError.invalidEndpoint(endpoint)
-        }
+        let url = try Self.requestURL(endpoint: endpoint, provider: provider, language: language)
 
         // Build multipart form request
         let boundary = "Boundary-\(UUID().uuidString)"
@@ -72,11 +69,6 @@ class STTService {
         // -- response format
         body.appendMultipart(boundary: boundary, name: "response_format", value: "json")
 
-        // GPT-4o Transcribe specific: include instructions for better output
-        if provider == .gpt4oTranscribe {
-            body.appendMultipart(boundary: boundary, name: "include[]", value: "logprobs")
-        }
-
         // Close boundary
         body.append(Data("--\(boundary)--\r\n".utf8))
 
@@ -103,6 +95,26 @@ class STTService {
         let result = try parseTranscriptionResponse(data: data)
         print("[STT] Transcription successful (\(result.count) chars)")
         return result
+    }
+
+    // MARK: - Request URL
+
+    /// Builds the request URL. Whisperapy-style local servers read `language` from the query
+    /// string (the form field is ignored there), while the OpenAI API reads the form field, so the
+    /// local path sends both. Internal (not private) for the unit tests.
+    nonisolated static func requestURL(endpoint: String, provider: STTProvider, language: String) throws -> URL {
+        guard var components = URLComponents(string: endpoint) else {
+            print("[STT] ERROR: Invalid endpoint URL: \(endpoint)")
+            throw STTError.invalidEndpoint(endpoint)
+        }
+        if provider == .localWhisper, !language.isEmpty {
+            components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "language", value: language)]
+        }
+        guard let url = components.url, !(components.host ?? "").isEmpty else {
+            print("[STT] ERROR: Invalid endpoint URL: \(endpoint)")
+            throw STTError.invalidEndpoint(endpoint)
+        }
+        return url
     }
 
     // MARK: - Parse Response

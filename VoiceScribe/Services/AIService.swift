@@ -90,7 +90,9 @@ class AIService {
 
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": 4096,
+            // Current models think before answering and thinking counts toward max_tokens,
+            // so leave ample room; a cut-off answer is reported via stop_reason below.
+            "max_tokens": 16000,
             "system": systemPrompt,
             "messages": [
                 ["role": "user", "content": text]
@@ -108,15 +110,9 @@ class AIService {
             throw AIError.apiError(provider: "Claude", statusCode: code, message: errBody)
         }
 
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let content = json["content"] as? [[String: Any]],
-              let first = content.first,
-              let resultText = first["text"] as? String else {
-            throw AIError.parseError("Claude")
-        }
-
+        let resultText = try Self.parseClaudeResponse(data)
         print("[AIService] Claude refinement complete")
-        return resultText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return resultText
     }
 
     // MARK: - OpenAI-Compatible (OpenAI, xAI)
@@ -137,14 +133,16 @@ class AIService {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 60
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": text]
-            ],
-            "temperature": 0.3
+            ]
         ]
+        if Self.supportsTemperature(model: model) {
+            body["temperature"] = 0.3
+        }
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -157,15 +155,61 @@ class AIService {
             throw AIError.apiError(provider: providerName, statusCode: code, message: errBody)
         }
 
+        let resultText = try Self.parseChatCompletionResponse(data, provider: providerName)
+        print("[AIService] \(providerName) refinement complete")
+        return resultText
+    }
+
+    /// OpenAI's reasoning models (o-series, GPT-5) reject any non-default `temperature` with a 400.
+    /// `fetchModels()` deliberately lists them, so the request must adapt.
+    nonisolated static func supportsTemperature(model: String) -> Bool {
+        let reasoningPrefixes = ["o1", "o3", "o4", "gpt-5"]
+        return !reasoningPrefixes.contains { model.hasPrefix($0) }
+    }
+
+    // MARK: - Response Parsing
+
+    /// Parses a Messages API response. Internal (not private) so the unit tests can cover the
+    /// thinking-block, refusal and truncation cases without a network call.
+    nonisolated static func parseClaudeResponse(_ data: Data) throws -> String {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = json["content"] as? [[String: Any]] else {
+            throw AIError.parseError("Claude")
+        }
+
+        // Safety classifiers answer with HTTP 200, stop_reason "refusal" and possibly empty content.
+        let stopReason = json["stop_reason"] as? String
+        if stopReason == "refusal" {
+            throw AIError.refused("Claude")
+        }
+
+        // Current models put a `thinking` block before the answer, so take the first `text` block.
+        guard let resultText = content.first(where: { $0["type"] as? String == "text" })?["text"] as? String else {
+            throw AIError.parseError("Claude")
+        }
+
+        // Never hand back a cut-off answer as if it were complete; it would be auto-copied.
+        if stopReason == "max_tokens" {
+            throw AIError.truncated("Claude")
+        }
+
+        return resultText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Parses a Chat Completions response (OpenAI and xAI).
+    nonisolated static func parseChatCompletionResponse(_ data: Data, provider: String) throws -> String {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let first = choices.first,
               let message = first["message"] as? [String: Any],
               let resultText = message["content"] as? String else {
-            throw AIError.parseError(providerName)
+            throw AIError.parseError(provider)
         }
 
-        print("[AIService] \(providerName) refinement complete")
+        if first["finish_reason"] as? String == "length" {
+            throw AIError.truncated(provider)
+        }
+
         return resultText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -175,11 +219,17 @@ class AIService {
         case missingAPIKey(String)
         case apiError(provider: String, statusCode: Int, message: String)
         case parseError(String)
+        case refused(String)
+        case truncated(String)
 
         var errorDescription: String? {
             switch self {
             case .missingAPIKey(let p):
                 return "\(p) API key is required. Set it in Settings \u{2192} API Keys."
+            case .refused(let p):
+                return "\(p) declined this request. Try another mode or model."
+            case .truncated(let p):
+                return "\(p) ran out of output tokens before finishing. Try a shorter recording or the Summarize mode."
             case .apiError(let p, let code, let msg):
                 return "\(p) API error (\(code)): \(msg)"
             case .parseError(let p):

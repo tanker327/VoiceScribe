@@ -78,12 +78,12 @@ struct SettingsView: View {
 
             if appState.sttProvider == .localWhisper {
                 Section("Local Whisper Endpoint") {
-                    TextField("Host", text: $appState.localWhisperHost, prompt: Text("192.168.10.110"))
+                    TextField("Host", text: $appState.localWhisperHost, prompt: Text("192.168.10.7"))
                     TextField("Port", text: $appState.localWhisperPort, prompt: Text("8000"))
                     TextField("Path", text: $appState.localWhisperPath, prompt: Text("/api/transcribe"))
                     TextField("Model", text: $appState.localWhisperModel, prompt: Text("whisper-large-v3"))
 
-                    Text("Uses OpenAI-compatible API format. Works with whisper.cpp server, faster-whisper-server, LocalAI, etc.")
+                    Text("Multipart upload to the given path. Works with Whisperapy (default), whisper.cpp server, faster-whisper-server, LocalAI, etc.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }

@@ -63,7 +63,7 @@ class AppState: ObservableObject {
     @Published var sttProvider: STTProvider = .gpt4oTranscribe {
         didSet { UserDefaults.standard.set(sttProvider.rawValue, forKey: "sttProvider") }
     }
-    @Published var localWhisperHost: String = "192.168.10.110" {
+    @Published var localWhisperHost: String = "192.168.10.7" {
         didSet { UserDefaults.standard.set(localWhisperHost, forKey: "localWhisperHost") }
     }
     @Published var localWhisperPort: String = "8000" {
@@ -156,7 +156,16 @@ class AppState: ObservableObject {
            let val = STTProvider(rawValue: raw) {
             _sttProvider = Published(wrappedValue: val)
         }
-        if let v = defaults.string(forKey: "localWhisperHost") { _localWhisperHost = Published(wrappedValue: v) }
+        if let v = defaults.string(forKey: "localWhisperHost") {
+            // The local Whisper server moved to power-linux-4090; carry installs still on the
+            // previous default host across. A host the user set to anything else is kept.
+            let host = v == "192.168.10.110" ? "192.168.10.7" : v
+            if host != v {
+                defaults.set(host, forKey: "localWhisperHost")
+                print("[Migration] localWhisperHost: \(v) -> \(host)")
+            }
+            _localWhisperHost = Published(wrappedValue: host)
+        }
         if let v = defaults.string(forKey: "localWhisperPort") { _localWhisperPort = Published(wrappedValue: v) }
         if let v = defaults.string(forKey: "localWhisperPath") { _localWhisperPath = Published(wrappedValue: v) }
         if let v = defaults.string(forKey: "localWhisperModel") { _localWhisperModel = Published(wrappedValue: v) }
@@ -443,7 +452,7 @@ enum RefinementMode: String, CaseIterable, Identifiable, Codable {
 
 // MARK: - History Entry
 
-struct TranscriptionEntry: Identifiable, Codable {
+struct TranscriptionEntry: Identifiable {
     let id: UUID
     let date: Date
     var rawText: String
