@@ -85,6 +85,13 @@ class AppState: ObservableObject {
         return "http://\(host):\(port)\(path)"
     }
 
+    /// Health-check URL of the local Whisper server (same host and port, fixed `/health` path)
+    var localWhisperHealthURL: String {
+        let host = localWhisperHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = localWhisperPort.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "http://\(host):\(port)/health"
+    }
+
     @Published var localWhisperModel: String = "whisper-large-v3" {
         didSet { UserDefaults.standard.set(localWhisperModel, forKey: "localWhisperModel") }
     }
@@ -136,6 +143,8 @@ class AppState: ObservableObject {
     @Published var isRefining = false
     @Published var isTranscribing = false
     @Published var statusMessage = "Ready"
+    /// Set when the launch health check (or Settings' Test Connection) fails; nil otherwise.
+    @Published var localWhisperHealthError: String?
     @Published var transcribedText = ""
     @Published var refinedText = ""
     @Published var showingRefined = false

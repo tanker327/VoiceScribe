@@ -119,7 +119,11 @@ struct SettingsView: View {
                         EmptyView()
                     }
                 }
-                .onChange(of: appState.localWhisperEndpoint) { sttTestResult = nil }
+                .onChange(of: appState.localWhisperEndpoint) {
+                    // The old result no longer applies to the new settings.
+                    sttTestResult = nil
+                    appState.localWhisperHealthError = nil
+                }
             }
 
             Section("Language") {
@@ -342,9 +346,11 @@ struct SettingsView: View {
                 let text = try await STTService.shared.testLocalEndpoint(endpoint: endpoint, model: model, language: language)
                 print("[STT] Test succeeded: \(endpoint)")
                 sttTestResult = .success(text)
+                appState.localWhisperHealthError = nil
             } catch {
                 print("[STT] Test failed: \(endpoint): \(error.localizedDescription)")
                 sttTestResult = .failure(error)
+                appState.localWhisperHealthError = error.localizedDescription
             }
             isTestingSTT = false
         }

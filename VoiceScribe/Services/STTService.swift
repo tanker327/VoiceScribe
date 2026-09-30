@@ -98,6 +98,28 @@ class STTService {
         return result
     }
 
+    /// GETs the local server's health endpoint; throws unless it answers 2xx within 5 seconds.
+    func checkHealth(url urlString: String) async throws {
+        guard let url = URL(string: urlString), !(url.host ?? "").isEmpty else {
+            print("[STT] ERROR: Invalid health URL: \(urlString)")
+            throw STTError.invalidEndpoint(urlString)
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+
+        print("[STT] Health check: \(urlString)")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw STTError.invalidResponse
+        }
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            print("[STT] Health check failed (\(httpResponse.statusCode)): \(body)")
+            throw STTError.apiError(statusCode: httpResponse.statusCode, message: body)
+        }
+        print("[STT] Health check OK")
+    }
+
     /// Sends one second of silence to a local endpoint so Settings can check the host, port and
     /// path. Returns the transcribed text (usually empty for silence); throws the same errors
     /// as a real transcription.

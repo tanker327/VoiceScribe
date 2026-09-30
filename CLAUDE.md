@@ -87,6 +87,8 @@ Three backends via `STTProvider`:
 2. **OpenAI Whisper** (`whisper-1`) — requires OpenAI API key
 3. **Local Whisper** — **default provider**. A multipart upload to a self-hosted server. Host, port, path and model are separate settings (defaults `100.91.237.44`, `8000`, `/api/transcribe`, `whisper-large-v3`). The default is the Whisperapy server on power-linux-4090: field `video`, `language` as a query parameter, `model` ignored. No auth header is sent. Installs still on the previous default host (`192.168.10.110`) are migrated to the new one at launch.
 
+At launch, when Local Whisper is selected, `ContentView` GETs `http://<host>:<port>/health` (5s timeout). A failure sets `AppState.localWhisperHealthError`, which turns the STT badge red with the error as its tooltip. Settings' **Test Connection** (sends 1s of silence) sets or clears the same error, and editing the endpoint clears it.
+
 `sttLanguage` (ISO 639-1, default `en`) is sent to every provider: as a form field for OpenAI, and additionally as a query item for the local endpoint.
 
 ## AI Providers

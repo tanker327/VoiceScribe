@@ -40,6 +40,7 @@ struct ContentView: View {
             installSpaceKeyMonitor()
             installMouseMonitor()
             applyAppearance()
+            checkLocalWhisperHealth()
             // Resign first responder so the editor doesn't auto-focus on launch
             DispatchQueue.main.async {
                 NSApp.keyWindow?.makeFirstResponder(nil)
@@ -100,13 +101,21 @@ struct ContentView: View {
 
             Spacer()
 
-            // STT badge
-            Text(appState.sttProvider.displayName)
-                .font(.system(size: 10, weight: .medium, design: .rounded))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.accentColor.opacity(0.12))
-                .cornerRadius(4)
+            // STT badge (red with a warning icon when the local server failed its health check)
+            let sttError = appState.sttProvider == .localWhisper ? appState.localWhisperHealthError : nil
+            HStack(spacing: 3) {
+                if sttError != nil {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                }
+                Text(appState.sttProvider.displayName)
+            }
+            .font(.system(size: 10, weight: .medium, design: .rounded))
+            .foregroundStyle(sttError == nil ? Color.primary : Color.red)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background((sttError == nil ? Color.accentColor : Color.red).opacity(0.12))
+            .cornerRadius(4)
+            .help(sttError.map { "Local Whisper is not reachable: \($0)" } ?? "")
 
             Text(appState.aiProvider.displayName)
                 .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -129,6 +138,22 @@ struct ContentView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    /// Runs once at launch so a down or misconfigured local Whisper server shows on the badge
+    /// before the user records anything.
+    private func checkLocalWhisperHealth() {
+        guard appState.sttProvider == .localWhisper else { return }
+        let url = appState.localWhisperHealthURL
+        Task {
+            do {
+                try await STTService.shared.checkHealth(url: url)
+                appState.localWhisperHealthError = nil
+            } catch {
+                print("[STT] Local Whisper unhealthy: \(error.localizedDescription)")
+                appState.localWhisperHealthError = error.localizedDescription
+            }
+        }
     }
 
     // MARK: - Custom Prompt Bar

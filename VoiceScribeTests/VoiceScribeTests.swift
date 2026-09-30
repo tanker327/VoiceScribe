@@ -440,3 +440,30 @@ struct STTSilentWAVTests {
         #expect(wav.count > 1000)
     }
 }
+
+// MARK: - Local Whisper health check
+
+@MainActor
+struct LocalWhisperHealthTests {
+
+    @Test func healthURLUsesHostAndPortButNotThePath() {
+        let state = AppState()
+        let saved = (state.localWhisperHost, state.localWhisperPort, state.localWhisperPath)
+        defer {
+            state.localWhisperHost = saved.0
+            state.localWhisperPort = saved.1
+            state.localWhisperPath = saved.2
+        }
+
+        state.localWhisperHost = " 100.91.237.44 "
+        state.localWhisperPort = "8000"
+        state.localWhisperPath = "/api/transcribe"
+        #expect(state.localWhisperHealthURL == "http://100.91.237.44:8000/health")
+    }
+
+    @Test func blankHostFailsBeforeAnyRequest() async {
+        await #expect(throws: STTService.STTError.self) {
+            try await STTService.shared.checkHealth(url: "http://:8000/health")
+        }
+    }
+}
