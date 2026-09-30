@@ -14,7 +14,8 @@ class STTService {
         apiKey: String,
         localEndpoint: String = "",
         localModel: String = "",
-        language: String = "en"
+        language: String = "en",
+        timeout: TimeInterval = 120
     ) async throws -> String {
 
         let endpoint = provider.endpoint(localURL: localEndpoint)
@@ -33,7 +34,7 @@ class STTService {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120
+        request.timeoutInterval = timeout
 
         // Auth header — skip for local
         if provider.requiresOpenAIKey {
@@ -95,6 +96,39 @@ class STTService {
         let result = try parseTranscriptionResponse(data: data)
         print("[STT] Transcription successful (\(result.count) chars)")
         return result
+    }
+
+    /// Sends one second of silence to a local endpoint so Settings can check the host, port and
+    /// path. Returns the transcribed text (usually empty for silence); throws the same errors
+    /// as a real transcription.
+    func testLocalEndpoint(endpoint: String, model: String, language: String) async throws -> String {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voicescribe-test-\(UUID().uuidString).wav")
+        try Self.silentWAV(seconds: 1).write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        print("[STT] Testing local endpoint: \(endpoint)")
+        return try await transcribe(fileURL: fileURL, provider: .localWhisper, apiKey: "",
+                                    localEndpoint: endpoint, localModel: model,
+                                    language: language, timeout: 15)
+    }
+
+    /// A 16kHz mono 16-bit PCM WAV of silence, the same format the recorder writes.
+    nonisolated static func silentWAV(seconds: Double) -> Data {
+        let sampleRate: UInt32 = 16_000
+        let dataSize = UInt32(Double(sampleRate) * seconds) * 2
+        var wav = Data()
+        func append<T: FixedWidthInteger>(_ value: T) {
+            withUnsafeBytes(of: value.littleEndian) { wav.append(contentsOf: $0) }
+        }
+        wav.append(Data("RIFF".utf8)); append(UInt32(36 + dataSize))
+        wav.append(Data("WAVEfmt ".utf8)); append(UInt32(16))
+        append(UInt16(1)); append(UInt16(1))                  // PCM, mono
+        append(sampleRate); append(sampleRate * 2)            // sample rate, byte rate
+        append(UInt16(2)); append(UInt16(16))                 // block align, bits per sample
+        wav.append(Data("data".utf8)); append(dataSize)
+        wav.append(Data(count: Int(dataSize)))
+        return wav
     }
 
     // MARK: - Request URL

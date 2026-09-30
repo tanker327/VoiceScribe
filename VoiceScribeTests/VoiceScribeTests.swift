@@ -418,3 +418,25 @@ struct TranscriptEditorTests {
         #expect(!model.isEditing)
     }
 }
+
+// MARK: - STTService test audio
+
+struct STTSilentWAVTests {
+
+    @Test func silentWAVIsAValid16kHzMonoPCMFile() throws {
+        let wav = STTService.silentWAV(seconds: 1)
+        #expect(wav.count == 44 + 32_000)
+        #expect(String(decoding: wav.prefix(4), as: UTF8.self) == "RIFF")
+
+        // AVAudioFile must accept it, since the server decodes it like a real recording.
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("silent-\(UUID().uuidString).wav")
+        try wav.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let file = try AVAudioFile(forReading: url)
+        #expect(file.fileFormat.sampleRate == 16_000)
+        #expect(file.fileFormat.channelCount == 1)
+        #expect(file.length == 16_000)
+        // The STT service rejects audio of 1000 bytes or less as too short.
+        #expect(wav.count > 1000)
+    }
+}

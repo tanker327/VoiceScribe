@@ -7,6 +7,8 @@ struct SettingsView: View {
     @State private var isLoadingModels = false
     @State private var modelLoadCooldown = false
     @State private var modelCache: [AIProvider: [String]] = [:]
+    @State private var isTestingSTT = false
+    @State private var sttTestResult: Result<String, Error>?
 
     var body: some View {
         TabView {
@@ -78,7 +80,7 @@ struct SettingsView: View {
 
             if appState.sttProvider == .localWhisper {
                 Section("Local Whisper Endpoint") {
-                    TextField("Host", text: $appState.localWhisperHost, prompt: Text("192.168.10.7"))
+                    TextField("Host", text: $appState.localWhisperHost, prompt: Text("100.91.237.44"))
                     TextField("Port", text: $appState.localWhisperPort, prompt: Text("8000"))
                     TextField("Path", text: $appState.localWhisperPath, prompt: Text("/api/transcribe"))
                     TextField("Model", text: $appState.localWhisperModel, prompt: Text("whisper-large-v3"))
@@ -86,7 +88,38 @@ struct SettingsView: View {
                     Text("Multipart upload to the given path. Works with Whisperapy (default), whisper.cpp server, faster-whisper-server, LocalAI, etc.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button(action: testSTTEndpoint) {
+                            if isTestingSTT {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .frame(width: 16, height: 16)
+                            } else {
+                                Label("Test Connection", systemImage: "network")
+                            }
+                        }
+                        .disabled(isTestingSTT)
+                        Spacer()
+                    }
+
+                    switch sttTestResult {
+                    case .success(let text):
+                        Label(text.isEmpty ? "Connected. The server accepted the test audio."
+                                           : "Connected. Server returned: \(text)",
+                              systemImage: "checkmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.green)
+                    case .failure(let error):
+                        Label(error.localizedDescription, systemImage: "xmark.octagon.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                    case nil:
+                        EmptyView()
+                    }
                 }
+                .onChange(of: appState.localWhisperEndpoint) { sttTestResult = nil }
             }
 
             Section("Language") {
@@ -294,6 +327,26 @@ struct SettingsView: View {
                 startCooldown()
                 modelLoadError = error.localizedDescription
             }
+        }
+    }
+
+    private func testSTTEndpoint() {
+        let endpoint = appState.localWhisperEndpoint
+        let model = appState.localWhisperModel
+        let language = appState.sttLanguage
+
+        sttTestResult = nil
+        isTestingSTT = true
+        Task {
+            do {
+                let text = try await STTService.shared.testLocalEndpoint(endpoint: endpoint, model: model, language: language)
+                print("[STT] Test succeeded: \(endpoint)")
+                sttTestResult = .success(text)
+            } catch {
+                print("[STT] Test failed: \(endpoint): \(error.localizedDescription)")
+                sttTestResult = .failure(error)
+            }
+            isTestingSTT = false
         }
     }
 

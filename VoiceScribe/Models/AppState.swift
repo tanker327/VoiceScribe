@@ -64,10 +64,10 @@ class AppState: ObservableObject {
     }
 
     // --- STT Settings ---
-    @Published var sttProvider: STTProvider = .gpt4oTranscribe {
+    @Published var sttProvider: STTProvider = .localWhisper {
         didSet { UserDefaults.standard.set(sttProvider.rawValue, forKey: "sttProvider") }
     }
-    @Published var localWhisperHost: String = "192.168.10.7" {
+    @Published var localWhisperHost: String = "100.91.237.44" {
         didSet { UserDefaults.standard.set(localWhisperHost, forKey: "localWhisperHost") }
     }
     @Published var localWhisperPort: String = "8000" {

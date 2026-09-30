@@ -83,9 +83,9 @@ Bare-key shortcuts (key codes Space=49, A=0, R=15) and Escape (53) are handled b
 ## STT Providers
 
 Three backends via `STTProvider`:
-1. **GPT-4o Transcribe** (`gpt-4o-transcribe`) — default, requires OpenAI API key
+1. **GPT-4o Transcribe** (`gpt-4o-transcribe`) — requires OpenAI API key
 2. **OpenAI Whisper** (`whisper-1`) — requires OpenAI API key
-3. **Local Whisper** — a multipart upload to a self-hosted server. Host, port, path and model are separate settings (defaults `192.168.10.7`, `8000`, `/api/transcribe`, `whisper-large-v3`). The default is the Whisperapy server on power-linux-4090: field `video`, `language` as a query parameter, `model` ignored. No auth header is sent. Installs still on the previous default host (`192.168.10.110`) are migrated to the new one at launch.
+3. **Local Whisper** — **default provider**. A multipart upload to a self-hosted server. Host, port, path and model are separate settings (defaults `100.91.237.44`, `8000`, `/api/transcribe`, `whisper-large-v3`). The default is the Whisperapy server on power-linux-4090: field `video`, `language` as a query parameter, `model` ignored. No auth header is sent. Installs still on the previous default host (`192.168.10.110`) are migrated to the new one at launch.
 
 `sttLanguage` (ISO 639-1, default `en`) is sent to every provider: as a form field for OpenAI, and additionally as a query item for the local endpoint.
 
