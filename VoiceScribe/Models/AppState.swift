@@ -169,8 +169,12 @@ class AppState: ObservableObject {
     @Published var isRefining = false
     @Published var isTranscribing = false
     @Published var statusMessage = "Ready"
-    /// Set when the launch health check (or Settings' Test Connection) fails; nil otherwise.
+    /// Set when the launch health check, a click on the STT badge or Settings' Test Connection
+    /// fails; nil otherwise.
     @Published var localWhisperHealthError: String?
+    /// Set when a click on the STT badge or Settings' Test Connection fails for Deepgram. Deepgram is
+    /// not checked at launch: each check sends 1 s of audio, which uses a little of the quota.
+    @Published var deepgramConnectionError: String?
     @Published var transcribedText = ""
     @Published var refinedText = ""
     @Published var showingRefined = false
@@ -207,9 +211,7 @@ class AppState: ObservableObject {
             _sttProvider = Published(wrappedValue: val)
         }
         if let v = defaults.string(forKey: "localWhisperHost") {
-            // The local Whisper server moved to power-linux-4090; carry installs still on the
-            // previous default host across. A host the user set to anything else is kept.
-            let host = v == "192.168.10.110" ? "192.168.10.7" : v
+            let host = Self.migratedLocalWhisperHost(v)
             if host != v {
                 defaults.set(host, forKey: "localWhisperHost")
                 print("[Migration] localWhisperHost: \(v) -> \(host)")
@@ -260,12 +262,22 @@ class AppState: ObservableObject {
         }
     }
 
+    /// The Whisper server is reached over Tailscale: installs still on one of its LAN addresses (the
+    /// old default, or power-linux-4090's) move to its Tailscale IP. Any other host is the user's own
+    /// choice and is kept. Internal (not private) for the unit tests.
+    nonisolated static func migratedLocalWhisperHost(_ host: String) -> String {
+        ["192.168.10.110", "192.168.10.7"].contains(host) ? "100.91.237.44" : host
+    }
+
     /// Migrate old display-string enum raw values to stable identifiers
     private static func migrateEnumValues(_ defaults: UserDefaults) {
         let sttMap = [
-            "OpenAI Whisper": STTProvider.openAIWhisper.rawValue,
-            "GPT-4o Transcribe": STTProvider.gpt4oTranscribe.rawValue,
-            "Local Whisper": STTProvider.localWhisper.rawValue
+            "Local Whisper": STTProvider.localWhisper.rawValue,
+            // The OpenAI providers were removed; whoever had one selected gets the default.
+            "OpenAI Whisper": STTProvider.localWhisper.rawValue,
+            "GPT-4o Transcribe": STTProvider.localWhisper.rawValue,
+            "openai_whisper": STTProvider.localWhisper.rawValue,
+            "gpt4o_transcribe": STTProvider.localWhisper.rawValue
         ]
         if let old = defaults.string(forKey: "sttProvider"), let new = sttMap[old] {
             defaults.set(new, forKey: "sttProvider")
@@ -334,14 +346,13 @@ class AppState: ObservableObject {
 
     /// Whether the STT provider has the key it needs. Local Whisper sends no auth.
     func isConfigured(_ provider: STTProvider) -> Bool {
-        Self.isConfigured(provider, openAIKey: openAIAPIKey, deepgramKey: deepgramAPIKey)
+        Self.isConfigured(provider, deepgramKey: deepgramAPIKey)
     }
 
-    /// Takes the keys as arguments so the unit tests never have to set one: the Keychain they would
+    /// Takes the key as an argument so the unit tests never have to set one: the Keychain they would
     /// write to is the user's real one.
-    nonisolated static func isConfigured(_ provider: STTProvider, openAIKey: String, deepgramKey: String) -> Bool {
+    nonisolated static func isConfigured(_ provider: STTProvider, deepgramKey: String) -> Bool {
         switch provider {
-        case .openAIWhisper, .gpt4oTranscribe: return !openAIKey.isEmpty
         case .localWhisper: return true
         case .deepgram: return !deepgramKey.isEmpty
         }
@@ -360,9 +371,9 @@ class AppState: ObservableObject {
 
 // MARK: - STT Provider
 
+/// Local Whisper uploads the WAV after Stop (`LocalWhisperService`); Deepgram streams the audio while
+/// recording (`DeepgramStream`).
 enum STTProvider: String, CaseIterable, Identifiable, Codable {
-    case openAIWhisper    = "openai_whisper"
-    case gpt4oTranscribe  = "gpt4o_transcribe"
     case localWhisper     = "local_whisper"
     case deepgram         = "deepgram"
 
@@ -370,8 +381,6 @@ enum STTProvider: String, CaseIterable, Identifiable, Codable {
 
     var displayName: String {
         switch self {
-        case .openAIWhisper:   return "OpenAI Whisper"
-        case .gpt4oTranscribe: return "GPT-4o Transcribe"
         case .localWhisper:    return "Local Whisper"
         case .deepgram:        return "Deepgram Nova-3"
         }
@@ -379,43 +388,9 @@ enum STTProvider: String, CaseIterable, Identifiable, Codable {
 
     var description: String {
         switch self {
-        case .openAIWhisper:   return "OpenAI Whisper API (whisper-1)"
-        case .gpt4oTranscribe: return "GPT-4o audio transcription — best accuracy"
         case .localWhisper:    return "Self-hosted Whisper endpoint"
         case .deepgram:        return "Deepgram streaming — the text is ready the moment you stop"
         }
-    }
-
-    /// The model string sent in the API request
-    nonisolated var modelName: String {
-        switch self {
-        case .openAIWhisper:   return "whisper-1"
-        case .gpt4oTranscribe: return "gpt-4o-transcribe"
-        case .localWhisper:    return ""          // filled from settings
-        case .deepgram:        return "nova-3"
-        }
-    }
-
-    /// Base URL for the transcription endpoint. Deepgram's URL carries its settings as query
-    /// items, so `DeepgramStream.listenURL` builds it instead.
-    func endpoint(localURL: String) -> String {
-        switch self {
-        case .openAIWhisper, .gpt4oTranscribe:
-            return "https://api.openai.com/v1/audio/transcriptions"
-        case .localWhisper:
-            return localURL
-        case .deepgram:
-            return "wss://api.deepgram.com/v1/listen"
-        }
-    }
-
-    var requiresOpenAIKey: Bool {
-        self == .openAIWhisper || self == .gpt4oTranscribe
-    }
-
-    /// Streams audio while recording (`DeepgramStream`) instead of uploading the WAV after Stop.
-    var isStreaming: Bool {
-        self == .deepgram
     }
 }
 
@@ -610,14 +585,12 @@ struct TranscriptionEntry: Identifiable {
     var rawText: String
     var refinedText: String?
     var mode: RefinementMode
-    let sttProvider: STTProvider
 
-    init(rawText: String, refinedText: String? = nil, mode: RefinementMode = .cleanup, sttProvider: STTProvider = .gpt4oTranscribe) {
+    init(rawText: String, refinedText: String? = nil, mode: RefinementMode = .cleanup) {
         self.id = UUID()
         self.date = Date()
         self.rawText = rawText
         self.refinedText = refinedText
         self.mode = mode
-        self.sttProvider = sttProvider
     }
 }

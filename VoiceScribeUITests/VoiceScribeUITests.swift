@@ -124,7 +124,8 @@ final class VoiceScribeUITests: XCTestCase {
         app.terminate()
         app.launchArguments = ["-sttProvider", "deepgram"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["Deepgram Nova-3"].waitForExistence(timeout: 10), "status bar badge")
+        // The badge is a button (a click tests the connection), but this test never clicks it: that would use the key.
+        XCTAssertTrue(app.buttons["Deepgram Nova-3"].waitForExistence(timeout: 10), "status bar badge")
 
         app.typeKey(",", modifierFlags: .command)
         let transcriptionTab = app.toolbars.buttons["Transcription"]
@@ -140,6 +141,23 @@ final class VoiceScribeUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["ISO 639-1 code: en, zh, ja, etc."].exists,
                        "Deepgram's language picker replaces the shared Language field")
         app.typeKey("w", modifierFlags: .command)
+    }
+
+    /// Clicking the Local Whisper badge re-runs the /health GET the app already sends at launch (no key,
+    /// no audio). The server may be up or down, so either outcome passes; the status text must report one.
+    @MainActor
+    func testClickingTheLocalWhisperBadgeChecksTheServer() throws {
+        app.terminate()
+        app.launchArguments = ["-sttProvider", "local_whisper"]
+        app.launch()
+        let badge = app.buttons["Local Whisper"]
+        XCTAssertTrue(badge.waitForExistence(timeout: 10))
+
+        badge.click()
+        let passed = app.staticTexts["Local Whisper connected ✓"]
+        let failed = app.staticTexts["Local Whisper check failed"]
+        let reported = NSPredicate { _, _ in passed.exists || failed.exists }
+        wait(for: [XCTNSPredicateExpectation(predicate: reported, object: nil)], timeout: 10)
     }
 
     @MainActor

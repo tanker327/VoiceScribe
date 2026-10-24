@@ -7,8 +7,8 @@ struct SettingsView: View {
     @State private var isLoadingModels = false
     @State private var modelLoadCooldown = false
     @State private var modelCache: [AIProvider: [String]] = [:]
-    @State private var isTestingSTT = false
-    @State private var sttTestResult: Result<String, Error>?
+    @State private var isTestingLocalWhisper = false
+    @State private var localWhisperTestResult: Result<String, Error>?
     @State private var isTestingDeepgram = false
     @State private var deepgramTestResult: Result<String, Error>?
 
@@ -32,7 +32,7 @@ struct SettingsView: View {
         Form {
             Section("OpenAI") {
                 SecureField("API Key", text: $appState.openAIAPIKey, prompt: Text("sk-..."))
-                Text("Used for Whisper/GPT-4o transcription and OpenAI refinement.")
+                Text("Used for OpenAI refinement.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -87,27 +87,35 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if appState.sttProvider == .localWhisper {
+            switch appState.sttProvider {
+            case .localWhisper:
                 Section("Local Whisper Endpoint") {
                     TextField("Host", text: $appState.localWhisperHost, prompt: Text("100.91.237.44"))
                     TextField("Port", text: $appState.localWhisperPort, prompt: Text("8000"))
                     TextField("Path", text: $appState.localWhisperPath, prompt: Text("/api/transcribe"))
                     TextField("Model", text: $appState.localWhisperModel, prompt: Text("whisper-large-v3"))
 
-                    Text("Multipart upload to the given path. Works with Whisperapy (default), whisper.cpp server, faster-whisper-server, LocalAI, etc.")
+                    Text("For a Whisperapy server: the audio is uploaded as the form field \"video\", the language as a query parameter. Servers that expect \"file\" (whisper.cpp, faster-whisper-server, LocalAI) won't work.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
 
-                    connectionTestRow(isTesting: isTestingSTT, result: sttTestResult, action: testSTTEndpoint)
+                    connectionTestRow(isTesting: isTestingLocalWhisper, result: localWhisperTestResult,
+                                      action: testLocalWhisper)
                 }
                 .onChange(of: appState.localWhisperEndpoint) {
                     // The old result no longer applies to the new settings.
-                    sttTestResult = nil
+                    localWhisperTestResult = nil
                     appState.localWhisperHealthError = nil
                 }
-            }
 
-            if appState.sttProvider == .deepgram {
+                Section("Language") {
+                    TextField("Language", text: $appState.sttLanguage, prompt: Text("en"))
+                    Text("ISO 639-1 code: en, zh, ja, etc.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+            case .deepgram:
                 Section("Deepgram") {
                     Picker("Language", selection: $appState.deepgramLanguageMode) {
                         ForEach(DeepgramLanguageMode.allCases) { mode in
@@ -128,13 +136,7 @@ struct SettingsView: View {
                 .onChange(of: [appState.deepgramAPIKey, appState.deepgramLanguageMode.rawValue, appState.deepgramKeyterms]) {
                     // The old result no longer applies to the new settings.
                     deepgramTestResult = nil
-                }
-            } else {
-                Section("Language") {
-                    TextField("Language", text: $appState.sttLanguage, prompt: Text("en"))
-                    Text("ISO 639-1 code: en, zh, ja, etc.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                    appState.deepgramConnectionError = nil
                 }
             }
         }
@@ -339,26 +341,26 @@ struct SettingsView: View {
         }
     }
 
-    private func testSTTEndpoint() {
+    private func testLocalWhisper() {
         let endpoint = appState.localWhisperEndpoint
         let model = appState.localWhisperModel
         let language = appState.sttLanguage
 
-        sttTestResult = nil
-        isTestingSTT = true
+        localWhisperTestResult = nil
+        isTestingLocalWhisper = true
         Task {
             do {
-                let text = try await STTService.shared.testLocalEndpoint(endpoint: endpoint, model: model, language: language)
+                let text = try await LocalWhisperService.shared.testLocalEndpoint(endpoint: endpoint, model: model, language: language)
                 print("[STT] Test succeeded: \(endpoint)")
-                sttTestResult = .success(text.isEmpty ? "Connected. The server accepted the test audio."
+                localWhisperTestResult = .success(text.isEmpty ? "Connected. The server accepted the test audio."
                                                       : "Connected. Server returned: \(text)")
                 appState.localWhisperHealthError = nil
             } catch {
                 print("[STT] Test failed: \(endpoint): \(error.localizedDescription)")
-                sttTestResult = .failure(error)
+                localWhisperTestResult = .failure(error)
                 appState.localWhisperHealthError = error.localizedDescription
             }
-            isTestingSTT = false
+            isTestingLocalWhisper = false
         }
     }
 
@@ -373,9 +375,11 @@ struct SettingsView: View {
             do {
                 try await DeepgramStream.testConnection(apiKey: apiKey, languageMode: languageMode, keyterms: keyterms)
                 deepgramTestResult = .success("Connected. Deepgram accepted the key and settings.")
+                appState.deepgramConnectionError = nil
             } catch {
                 print("[Deepgram] Test failed: \(error.localizedDescription)")
                 deepgramTestResult = .failure(error)
+                appState.deepgramConnectionError = error.localizedDescription
             }
             isTestingDeepgram = false
         }

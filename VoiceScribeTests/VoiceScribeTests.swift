@@ -134,31 +134,23 @@ struct AudioDownsamplingTests {
     }
 }
 
-// MARK: - STTService request URL
+// MARK: - LocalWhisperService request URL
 
-struct STTRequestURLTests {
+struct LocalWhisperRequestURLTests {
 
     @Test func localEndpointGetsLanguageQueryItem() throws {
-        let url = try STTService.requestURL(endpoint: "http://192.168.10.7:8000/api/transcribe",
-                                            provider: .localWhisper, language: "en")
+        let url = try LocalWhisperService.requestURL(endpoint: "http://192.168.10.7:8000/api/transcribe", language: "en")
         #expect(url.absoluteString == "http://192.168.10.7:8000/api/transcribe?language=en")
     }
 
     @Test func localEndpointWithoutLanguageIsUnchanged() throws {
-        let url = try STTService.requestURL(endpoint: "http://192.168.10.7:8000/api/transcribe",
-                                            provider: .localWhisper, language: "")
+        let url = try LocalWhisperService.requestURL(endpoint: "http://192.168.10.7:8000/api/transcribe", language: "")
         #expect(url.absoluteString == "http://192.168.10.7:8000/api/transcribe")
     }
 
-    @Test func openAIEndpointKeepsLanguageOutOfTheQuery() throws {
-        let url = try STTService.requestURL(endpoint: "https://api.openai.com/v1/audio/transcriptions",
-                                            provider: .gpt4oTranscribe, language: "en")
-        #expect(url.absoluteString == "https://api.openai.com/v1/audio/transcriptions")
-    }
-
     @Test func invalidEndpointThrows() {
-        #expect(throws: STTService.STTError.self) {
-            try STTService.requestURL(endpoint: "http://:8000", provider: .localWhisper, language: "en")
+        #expect(throws: LocalWhisperService.STTError.self) {
+            try LocalWhisperService.requestURL(endpoint: "http://:8000", language: "en")
         }
     }
 }
@@ -481,12 +473,12 @@ struct TranscriptEditorTests {
     }
 }
 
-// MARK: - STTService test audio
+// MARK: - LocalWhisperService test audio
 
-struct STTSilentWAVTests {
+struct LocalWhisperSilentWAVTests {
 
     @Test func silentWAVIsAValid16kHzMonoPCMFile() throws {
-        let wav = STTService.silentWAV(seconds: 1)
+        let wav = LocalWhisperService.silentWAV(seconds: 1)
         #expect(wav.count == 44 + 32_000)
         #expect(String(decoding: wav.prefix(4), as: UTF8.self) == "RIFF")
 
@@ -524,8 +516,8 @@ struct LocalWhisperHealthTests {
     }
 
     @Test func blankHostFailsBeforeAnyRequest() async {
-        await #expect(throws: STTService.STTError.self) {
-            try await STTService.shared.checkHealth(url: "http://:8000/health")
+        await #expect(throws: LocalWhisperService.STTError.self) {
+            try await LocalWhisperService.shared.checkHealth(url: "http://:8000/health")
         }
     }
 }
@@ -748,13 +740,6 @@ struct DeepgramSettingsTests {
         #expect(state.deepgramKeytermList == ["Brewer", "homelab", "customer service", "Kubernetes"])
     }
 
-    @Test func onlyDeepgramStreams() {
-        #expect(STTProvider.allCases.filter(\.isStreaming) == [.deepgram])
-        #expect(STTProvider.deepgram.modelName == "nova-3")
-        #expect(STTProvider.deepgram.endpoint(localURL: "") == "wss://api.deepgram.com/v1/listen")
-        #expect(!STTProvider.deepgram.requiresOpenAIKey)
-    }
-
     /// The stored raw values are persisted identifiers, like the other enums'.
     @Test func languageModeRawValuesAreStable() {
         #expect(DeepgramLanguageMode.allCases.map(\.rawValue) == ["multi_zh_en", "en", "zh"])
@@ -779,16 +764,75 @@ struct DeepgramSettingsTests {
     }
 
     /// Through the static seam: setting a key on AppState would write the user's real Keychain.
-    @Test func eachProviderNeedsOnlyItsOwnKey() {
-        #expect(AppState.isConfigured(.localWhisper, openAIKey: "", deepgramKey: ""), "Local Whisper sends no key")
-        #expect(AppState.isConfigured(.deepgram, openAIKey: "", deepgramKey: "dg-1"))
-        #expect(!AppState.isConfigured(.deepgram, openAIKey: "sk-1", deepgramKey: ""))
-        #expect(!AppState.isConfigured(.gpt4oTranscribe, openAIKey: "", deepgramKey: "dg-1"),
-                "a Deepgram key does not configure OpenAI")
-        #expect(AppState.isConfigured(.openAIWhisper, openAIKey: "sk-1", deepgramKey: ""))
+    @Test func onlyDeepgramNeedsAKey() {
+        #expect(AppState.isConfigured(.localWhisper, deepgramKey: ""), "Local Whisper sends no key")
+        #expect(AppState.isConfigured(.deepgram, deepgramKey: "dg-1"))
+        #expect(!AppState.isConfigured(.deepgram, deepgramKey: ""))
 
         let state = AppState()   // read only
         #expect(state.isConfigured(.deepgram) == !state.deepgramAPIKey.isEmpty)
+    }
+}
+
+// MARK: - STT provider persistence
+
+@MainActor
+struct STTProviderPersistenceTests {
+
+    @Test func rawValuesAreStable() {
+        #expect(STTProvider.allCases.map(\.rawValue) == ["local_whisper", "deepgram"])
+    }
+
+    /// GPT-4o Transcribe and OpenAI Whisper were removed: a saved choice of either, by raw value or
+    /// by the older display name, comes back as Local Whisper and is rewritten.
+    @Test(arguments: ["gpt4o_transcribe", "openai_whisper", "GPT-4o Transcribe", "OpenAI Whisper"])
+    func removedProvidersFallBackToLocalWhisper(saved: String) {
+        let defaults = UserDefaults.standard
+        let original = defaults.string(forKey: "sttProvider")
+        defer { defaults.set(original, forKey: "sttProvider") }
+
+        defaults.set(saved, forKey: "sttProvider")
+        #expect(AppState().sttProvider == .localWhisper)
+        #expect(defaults.string(forKey: "sttProvider") == "local_whisper")
+    }
+
+    @Test func aSavedProviderSurvivesARelaunch() {
+        let defaults = UserDefaults.standard
+        let original = defaults.string(forKey: "sttProvider")
+        defer { defaults.set(original, forKey: "sttProvider") }
+
+        AppState().sttProvider = .deepgram
+        #expect(AppState().sttProvider == .deepgram)
+        AppState().sttProvider = .localWhisper
+        #expect(AppState().sttProvider == .localWhisper)
+    }
+
+    /// The Whisper server is reached over Tailscale, so its LAN addresses move to the Tailscale IP.
+    @Test func lanHostsMoveToTheTailscaleIP() {
+        #expect(AppState.migratedLocalWhisperHost("192.168.10.110") == "100.91.237.44", "the old default")
+        #expect(AppState.migratedLocalWhisperHost("192.168.10.7") == "100.91.237.44", "power-linux-4090 on the LAN")
+        #expect(AppState.migratedLocalWhisperHost("100.91.237.44") == "100.91.237.44")
+        #expect(AppState.migratedLocalWhisperHost("localhost") == "localhost", "a host the user chose is kept")
+    }
+}
+
+// MARK: - STT badge
+
+struct STTBadgeTests {
+
+    @Test func localWhisperShowsItsFailedCheck() {
+        #expect(ContentView.sttProblem(.localWhisper, hasDeepgramKey: false, localWhisperError: nil, deepgramError: "x") == nil,
+                "Deepgram's state does not affect Local Whisper")
+        #expect(ContentView.sttProblem(.localWhisper, hasDeepgramKey: true, localWhisperError: "timed out", deepgramError: nil)
+                == "Local Whisper is not reachable: timed out")
+    }
+
+    @Test func deepgramShowsAMissingKeyBeforeAFailedCheck() {
+        let noKey = "No Deepgram API key. Set it in Settings → API Keys."
+        #expect(ContentView.sttProblem(.deepgram, hasDeepgramKey: false, localWhisperError: "x", deepgramError: nil) == noKey)
+        #expect(ContentView.sttProblem(.deepgram, hasDeepgramKey: false, localWhisperError: nil, deepgramError: "rejected") == noKey)
+        #expect(ContentView.sttProblem(.deepgram, hasDeepgramKey: true, localWhisperError: "x", deepgramError: "rejected") == "rejected")
+        #expect(ContentView.sttProblem(.deepgram, hasDeepgramKey: true, localWhisperError: "x", deepgramError: nil) == nil)
     }
 }
 

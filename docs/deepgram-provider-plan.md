@@ -59,6 +59,9 @@ in a buffer until then.
 1. **`Models/AppState.swift`**
    - `STTProvider.deepgram = "deepgram"` (stable raw value). Display name "Deepgram Nova-3", model
      `nova-3`, endpoint `wss://api.deepgram.com/v1/listen`, new `isStreaming` (true only here).
+     *Update 2026-10-24:* the OpenAI STT providers were removed, leaving Local Whisper and Deepgram,
+     so `modelName`, `endpoint` and `isStreaming` went too: `ContentView` checks `== .deepgram`
+     and `listenURL` holds `nova-3`.
    - `deepgramAPIKey`: Keychain with the 0.5 s debounce, the same pattern as the other keys.
    - `deepgramKeyterms: String` (UserDefaults; separated by commas, full-width commas or new
      lines) plus a computed list that is trimmed with empties dropped. Not capped in the app: an
@@ -67,7 +70,7 @@ in a buffer until then.
    - `deepgramLanguageMode` (UserDefaults, guide 6.6), its own enum with stable raw values:
      **Mixed Chinese + English** (default: `language=multi&language_hint=zh&language_hint=en`),
      **English** (`language=en`), **Chinese** (`language=zh`). It is separate from `sttLanguage`
-     because `multi` and the hints mean nothing to the other providers.
+     because `multi` and the hints mean nothing to the other providers (now just Local Whisper).
 2. **`Services/AudioRecorderService.swift`**
    - `startRecording(onPCM16Chunk:)`. When it is passed, the tap converts the 16 kHz Float32 buffer
      with a new `nonisolated static func pcm16Data(from:)` (clamped, little-endian) and hops to

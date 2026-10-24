@@ -22,6 +22,8 @@ struct ContentView: View {
     @State private var deepgramStream: DeepgramStream?
     /// How much of the editor's tail is a live interim result, drawn dimmed.
     @State private var liveDimmedLength = 0
+    /// True while a click on the STT badge is testing the provider.
+    @State private var isCheckingSTT = false
     @State private var spaceKeyMonitor: Any?
     @State private var mouseMonitor: Any?
     @State private var hostWindow: NSWindow?
@@ -106,22 +108,26 @@ struct ContentView: View {
 
             Spacer()
 
-            // STT badge (red with a warning icon when the local server failed its health check
-            // or Deepgram has no key)
+            // STT badge: red with a warning icon when the provider cannot work (the reason is the
+            // tooltip). Clicking it tests the connection again.
             let sttError = sttProblem
-            HStack(spacing: 3) {
-                if sttError != nil {
-                    Image(systemName: "exclamationmark.triangle.fill")
+            Button(action: checkSTTConnection) {
+                HStack(spacing: 3) {
+                    if sttError != nil {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                    }
+                    Text(appState.sttProvider.displayName)
                 }
-                Text(appState.sttProvider.displayName)
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .foregroundStyle(sttError == nil ? Color.primary : Color.red)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background((sttError == nil ? Color.accentColor : Color.red).opacity(0.12))
+                .cornerRadius(4)
             }
-            .font(.system(size: 10, weight: .medium, design: .rounded))
-            .foregroundStyle(sttError == nil ? Color.primary : Color.red)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background((sttError == nil ? Color.accentColor : Color.red).opacity(0.12))
-            .cornerRadius(4)
-            .help(sttError ?? "")
+            .buttonStyle(.plain)
+            .help(sttError.map { "\($0)\nClick to test again." } ?? "Click to test the connection")
+            .accessibilityLabel(appState.sttProvider.displayName)
 
             Text(appState.aiProvider.displayName)
                 .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -148,30 +154,71 @@ struct ContentView: View {
 
     /// Why the selected STT provider cannot work right now, shown as the badge's tooltip; nil when it can.
     private var sttProblem: String? {
-        switch appState.sttProvider {
+        Self.sttProblem(appState.sttProvider, hasDeepgramKey: appState.isConfigured(.deepgram),
+                        localWhisperError: appState.localWhisperHealthError,
+                        deepgramError: appState.deepgramConnectionError)
+    }
+
+    /// A missing key outranks a failed check, because adding the key is the fix. Internal (not
+    /// private) for the unit tests.
+    nonisolated static func sttProblem(_ provider: STTProvider, hasDeepgramKey: Bool,
+                                       localWhisperError: String?, deepgramError: String?) -> String? {
+        switch provider {
         case .localWhisper:
-            return appState.localWhisperHealthError.map { "Local Whisper is not reachable: \($0)" }
+            return localWhisperError.map { "Local Whisper is not reachable: \($0)" }
         case .deepgram:
-            return appState.deepgramAPIKey.isEmpty ? "No Deepgram API key. Set it in Settings → API Keys." : nil
-        case .openAIWhisper, .gpt4oTranscribe:
-            return nil
+            return hasDeepgramKey ? deepgramError : "No Deepgram API key. Set it in Settings → API Keys."
         }
     }
 
     /// Runs once at launch so a down or misconfigured local Whisper server shows on the badge
-    /// before the user records anything.
+    /// before the user records anything. Deepgram is not checked: that would use its quota.
     private func checkLocalWhisperHealth() {
         guard appState.sttProvider == .localWhisper else { return }
-        let url = appState.localWhisperHealthURL
+        Task { _ = await runConnectionCheck(.localWhisper) }
+    }
+
+    /// A click on the STT badge tests the selected provider again: Local Whisper's /health, or 1 s
+    /// of silence streamed to Deepgram. Ignored while recording, transcribing or refining, so their
+    /// status text stays.
+    private func checkSTTConnection() {
+        guard !isCheckingSTT, !appState.isRecording, !appState.isTranscribing, !appState.isRefining else { return }
+        let provider = appState.sttProvider
+        let checking = "Checking \(provider.displayName)…"
+        isCheckingSTT = true
+        appState.statusMessage = checking
         Task {
-            do {
-                try await STTService.shared.checkHealth(url: url)
-                appState.localWhisperHealthError = nil
-            } catch {
-                print("[STT] Local Whisper unhealthy: \(error.localizedDescription)")
-                appState.localWhisperHealthError = error.localizedDescription
+            let passed = await runConnectionCheck(provider)
+            isCheckingSTT = false
+            // Unless something else (a recording) has taken over the status text meanwhile.
+            if appState.statusMessage == checking {
+                appState.statusMessage = passed ? "\(provider.displayName) connected ✓" : "\(provider.displayName) check failed"
             }
         }
+    }
+
+    /// Tests the provider and stores the outcome where its badge reads it. Returns whether it passed.
+    private func runConnectionCheck(_ provider: STTProvider) async -> Bool {
+        var failure: String?
+        do {
+            switch provider {
+            case .localWhisper:
+                try await LocalWhisperService.shared.checkHealth(url: appState.localWhisperHealthURL)
+            case .deepgram:
+                try await DeepgramStream.testConnection(apiKey: appState.deepgramAPIKey,
+                                                        languageMode: appState.deepgramLanguageMode,
+                                                        keyterms: appState.deepgramKeytermList)
+            }
+            print("[STT] \(provider.displayName) check OK")
+        } catch {
+            print("[STT] \(provider.displayName) check failed: \(error.localizedDescription)")
+            failure = error.localizedDescription
+        }
+        switch provider {
+        case .localWhisper: appState.localWhisperHealthError = failure
+        case .deepgram:     appState.deepgramConnectionError = failure
+        }
+        return failure == nil
     }
 
     // MARK: - Custom Prompt Bar
@@ -593,11 +640,11 @@ struct ContentView: View {
         startRecorder(status: "Recording (append)…")
     }
 
-    /// Starts the microphone. A streaming provider also gets its connection, which receives the
-    /// audio as it is recorded; a missing key fails here, before anything starts.
+    /// Starts the microphone. Deepgram also gets its connection, which receives the audio as it is
+    /// recorded; a missing key fails here, before anything starts.
     private func startRecorder(status: String) {
         do {
-            let stream = appState.sttProvider.isStreaming ? try makeDeepgramStream() : nil
+            let stream = appState.sttProvider == .deepgram ? try makeDeepgramStream() : nil
             try recorder.startRecording(onPCM16Chunk: stream?.send)
             stream?.connect()
             deepgramStream = stream
@@ -672,12 +719,10 @@ struct ContentView: View {
                     // The WAV recorded alongside the stream is the fallback if the stream failed.
                     text = try await stream.finish(fallbackFile: audioURL)
                 } else {
-                    text = try await STTService.shared.transcribe(
+                    text = try await LocalWhisperService.shared.transcribe(
                         fileURL: audioURL,
-                        provider: appState.sttProvider,
-                        apiKey: appState.openAIAPIKey,
-                        localEndpoint: appState.localWhisperEndpoint,
-                        localModel: appState.localWhisperModel,
+                        endpoint: appState.localWhisperEndpoint,
+                        model: appState.localWhisperModel,
                         language: appState.sttLanguage
                     )
                 }
@@ -694,11 +739,7 @@ struct ContentView: View {
                 } else {
                     appState.transcribedText = text
                     // Create a new history entry immediately
-                    let entry = TranscriptionEntry(
-                        rawText: text,
-                        mode: appState.refinementMode,
-                        sttProvider: appState.sttProvider
-                    )
+                    let entry = TranscriptionEntry(rawText: text, mode: appState.refinementMode)
                     appState.addHistoryEntry(entry)
                     currentHistoryEntryID = entry.id
                 }

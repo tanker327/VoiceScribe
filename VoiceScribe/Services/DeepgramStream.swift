@@ -328,7 +328,7 @@ final class DeepgramStream: NSObject, URLSessionWebSocketDelegate {
         components.host = "api.deepgram.com"
         components.path = "/v1/listen"
 
-        var items = [URLQueryItem(name: "model", value: STTProvider.deepgram.modelName)]
+        var items = [URLQueryItem(name: "model", value: "nova-3")]
         items += languageMode.queryItems
         items.append(URLQueryItem(name: "smart_format", value: "true"))
         if streaming {
