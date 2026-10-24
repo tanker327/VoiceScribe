@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VoiceScribe is a **macOS SwiftUI app** for speech-to-text transcription with AI-powered text refinement. It records audio, sends it to an STT backend, then optionally refines the transcript using an LLM (Claude, OpenAI, xAI, or any OpenAI-compatible endpoint such as a self-hosted model server).
+VoiceScribe is a **macOS SwiftUI app** for speech-to-text transcription with AI-powered text refinement. It records audio, sends it to an STT backend (or streams it live to Deepgram while recording), then optionally refines the transcript using an LLM (Claude, OpenAI, xAI, or any OpenAI-compatible endpoint such as a self-hosted model server).
 
 - **Platform**: macOS 14.0+ (Sonoma). One main `Window` scene plus a `Settings` scene.
 - **Toolchain**: Swift / SwiftUI. The project enables `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` and `SWIFT_APPROACHABLE_CONCURRENCY`, so build with **Xcode 26 or newer** (the README's "Xcode 15+" is stale).
@@ -27,7 +27,7 @@ xcodebuild -project VoiceScribe.xcodeproj -scheme VoiceScribe -destination 'plat
 xcodebuild -project VoiceScribe.xcodeproj -scheme VoiceScribe -destination 'platform=macOS' -only-testing:VoiceScribeUITests/VoiceScribeUITests test
 ```
 
-Unit tests use Swift Testing (`import Testing` / `@Test`) and run inside the app process. They cover the AI response parsers, the temperature rule, the endpoint URL joining and auth headers, the configuration checks that fail before any request, `AppState`'s per-provider resolution (those tests restore the settings they touch, because they share the app's UserDefaults), and the audio downsampler through `nonisolated static` seams on the services (no network or microphone needed). `TranscriptEditor` is tested in-process too: hosted in an `NSHostingView` inside an unshown window, so the double-click, typing, focus-loss and update paths run without the UI test runner. UI tests use XCTest and drive the real main window through XCUITest; they deliberately never record or call a provider API, because that would need microphone permission and would spend the user's API keys. Keep new UI tests to that rule. The stock `VoiceScribeUITestsLaunchTests` is flaky on this machine and unrelated to the app.
+Unit tests use Swift Testing (`import Testing` / `@Test`) and run inside the app process. They cover the AI response parsers, the temperature rule, the endpoint URL joining and auth headers, the configuration checks that fail before any request, `AppState`'s per-provider resolution (those tests restore the settings they touch, because they share the app's UserDefaults, and never set an API key: the Keychain is the user's real one, so key logic is tested through static seams like `AppState.isConfigured(_:openAIKey:deepgramKey:)`), and the audio downsampler and PCM16 conversion, and Deepgram's URL building, message parsing, transcript accumulation and error mapping through `nonisolated static` seams on the services (no network or microphone needed). `TranscriptEditor` is tested in-process too: hosted in an `NSHostingView` inside an unshown window, so the double-click, typing, focus-loss and update paths run without the UI test runner. UI tests use XCTest and drive the real main window through XCUITest; they deliberately never record or call a provider API, because that would need microphone permission and would spend the user's API keys. Keep new UI tests to that rule. The stock `VoiceScribeUITestsLaunchTests` is flaky on this machine and unrelated to the app.
 
 ## Architecture
 
@@ -38,6 +38,7 @@ Single-state + services. No MVVM or coordinator layers. `AppState` is the only s
 ```
 User taps Record → AudioRecorderService (AVAudioEngine → 16kHz mono 16-bit PCM WAV in temp dir)
     → STTService.transcribe() (multipart POST to OpenAI or local Whisper)
+      or, for Deepgram, DeepgramStream (PCM16 chunks over a WebSocket while recording; finish() after Stop)
     → AppState.transcribedText  (+ a new TranscriptionEntry is added to history immediately)
     → AIService.refine() (Claude, OpenAI, xAI, or an OpenAI-compatible endpoint)
     → AppState.refinedText → shown in editor / copied to clipboard  (history entry updated in place)
@@ -46,25 +47,27 @@ User taps Record → AudioRecorderService (AVAudioEngine → 16kHz mono 16-bit P
 ### Key files
 
 - **`App/VoiceScribeApp.swift`** — Entry point. Main window defaults to 440×620 (min 400×520); Settings window is fixed at 520×480. Injects `AppState` as `@EnvironmentObject`.
-- **`Models/AppState.swift`** — Single `@MainActor ObservableObject` holding all settings and runtime state. Also defines `AppAppearance`, `STTProvider`, `AIProvider`, `RefinementMode` (each mode carries its own `systemPrompt`) and the `TranscriptionEntry` history model.
-- **`Services/AudioRecorderService.swift`** — `AVAudioEngine` recorder, an `ObservableObject` owned as a `@StateObject` by `ContentView`. Installs an input tap, downsamples with `AVAudioConverter`, writes to a temp WAV on a serial `DispatchQueue`. Publishes `inputDeviceName` from a CoreAudio default-input-device listener. The smoothed RMS level lives in the nested `LevelMeter` observable so per-buffer updates re-render only `AudioLevelBar`, not the whole `ContentView`. The tap hands each buffer to the static `downsample`, which feeds the converter exactly once per buffer, and `rms`.
+- **`Models/AppState.swift`** — Single `@MainActor ObservableObject` holding all settings and runtime state. Also defines `AppAppearance`, `STTProvider`, `DeepgramLanguageMode`, `AIProvider`, `RefinementMode` (each mode carries its own `systemPrompt`) and the `TranscriptionEntry` history model.
+- **`Services/AudioRecorderService.swift`** — `AVAudioEngine` recorder, an `ObservableObject` owned as a `@StateObject` by `ContentView`. Installs an input tap, downsamples with `AVAudioConverter`, writes to a temp WAV on a serial `DispatchQueue`. Publishes `inputDeviceName` from a CoreAudio default-input-device listener. The smoothed RMS level lives in the nested `LevelMeter` observable so per-buffer updates re-render only `AudioLevelBar`, not the whole `ContentView`. The tap hands each buffer to the static `downsample`, which feeds the converter exactly once per buffer, and `rms`. `startRecording(onPCM16Chunk:)` also delivers each buffer as PCM16 (`pcm16Data`) on the main queue for a streaming provider; the WAV is written either way.
+- **`Services/DeepgramStream.swift`** — One object per Deepgram recording, owned by `ContentView` as `@State`. Opens `wss://api.deepgram.com/v1/listen` (`Authorization: Token`), buffers chunks until the socket opens, sends `KeepAlive` on open and every 8 s, and accumulates results in `TranscriptAccumulator` (finals appended, interim replaced, no space between CJK characters). `finish(fallbackFile:)` yields one main-queue turn so queued chunks go out, sends `CloseStream`, and resolves on `Metadata`, the socket closing, 1.5 s without a message or a 5 s cap, then promotes the interim. If the stream failed for any reason but a 4xx rejection, it uploads the WAV to the pre-recorded `POST /v1/listen` instead. A 4xx handshake (`dg-error` header holds the reason) calls `onRejected`, which aborts the recording. `testConnection` streams 1 s of silence for Settings.
 - **`Services/KeychainHelper.swift`** — Static Keychain CRUD (Security framework). Saving an empty value deletes the item.
 - **`Services/STTService.swift`** — Singleton. Multipart/form-data POST. File field is `"file"` for OpenAI and `"video"` for the local endpoint. Parses `{ "text": ... }` and falls back to treating the body as plain text.
 - **`Services/AIService.swift`** — Singleton. Claude uses the Messages API (`x-api-key`, `anthropic-version: 2023-06-01`, top-level `system`); the static `parseClaudeResponse` takes the first `text` content block and turns `refusal` and `max_tokens` stop reasons into errors; `parseChatCompletionResponse` does the same for a `length` finish reason. OpenAI, xAI and the OpenAI-compatible endpoint share one Chat Completions path (Bearer token, omitted when the compatible endpoint has no key; `temperature: 0.3` except for reasoning models, which reject it). Every request URL comes from the static `endpointURL(base:path:providerName:)`, which joins a base URL that already includes `/v1` (the provider's built-in one, or the user's Base URL for the compatible endpoint; trailing slashes dropped, `http(s)` with a host required) with `messages`, `chat/completions` or `models`. `fetchModels()` filters OpenAI results to `gpt-`/`o1`/`o3`/`o4` prefixes. A missing key (built-in providers only), Base URL or model is reported as a configuration error before any request.
 - **`Views/ContentView.swift`** — Main UI: `HSplitView` with the main panel (optional custom-prompt bar, editor, status bar, action bar) and an optional 240pt history sidebar. Owns the record/append/abort/transcribe/refine/copy/clear actions, the editor's edit-mode flag (`isEditingText`, see below) and the `NSEvent` monitors. The `canStartRecording` and `canRefine` predicates gate the buttons and the bare keys alike.
-- **`Views/TranscriptEditor.swift`** — The editor, an `NSViewRepresentable` around a `TranscriptTextView` (`NSTextView` subclass) rather than SwiftUI's `TextEditor`, so the text can be read-only yet still selectable, scrollable and copyable. Plain text only, own `UndoManager` (dropped on programmatic text replacement), 12pt inset and 4pt line spacing. The subclass reports a double-click while read-only (edit mode begins, caret placed at the click) and loss of first responder (edit mode ends).
-- **`Views/SettingsView.swift`** — Three tabs: API Keys, Transcription, AI & General. Caches fetched model lists per provider in `@State`; changing the provider resets `aiModel` to that provider's default. The OpenAI-compatible provider adds an "OpenAI-compatible Endpoint" section to AI & General (Base URL, optional key, free-text model with Load Models as a helper menu); its model is `customAIModel`, not `aiModel`, and its cached model list is dropped when the Base URL changes.
+- **`Views/TranscriptEditor.swift`** — The editor, an `NSViewRepresentable` around a `TranscriptTextView` (`NSTextView` subclass) rather than SwiftUI's `TextEditor`, so the text can be read-only yet still selectable, scrollable and copyable. Plain text only, own `UndoManager` (dropped on programmatic text replacement), 12pt inset and 4pt line spacing. `dimmedSuffixLength` (UTF-16) draws a live interim tail in `secondaryLabelColor`, and text that changes while disabled (recording) scrolls to the end. The subclass reports a double-click while read-only (edit mode begins, caret placed at the click) and loss of first responder (edit mode ends).
+- **`Views/SettingsView.swift`** — Three tabs: API Keys, Transcription, AI & General. Caches fetched model lists per provider in `@State`; changing the provider resets `aiModel` to that provider's default. The OpenAI-compatible provider adds an "OpenAI-compatible Endpoint" section to AI & General (Base URL, optional key, free-text model with Load Models as a helper menu); its model is `customAIModel`, not `aiModel`, and its cached model list is dropped when the Base URL changes. When Deepgram is the STT provider, the Transcription tab shows its language mode, keyterms and live-transcript toggle instead of the shared Language field, plus a Test Connection row (shared helper `connectionTestRow` with Local Whisper).
 
 ### Concurrency model
 
 - The whole module defaults to `@MainActor` isolation via the build setting. Services are plain classes and are therefore MainActor-isolated; `await URLSession.shared.data(for:)` suspends without blocking the UI.
-- Anything that runs off the main actor must be `nonisolated`. `KeychainHelper.save` is, because `AppState` calls it from a debounced `DispatchWorkItem` on a global queue. The audio tap callback hops to `audioFileQueue` for file writes and to `DispatchQueue.main` to update published properties.
+- Anything that runs off the main actor must be `nonisolated`. `KeychainHelper.save` is, because `AppState` calls it from a debounced `DispatchWorkItem` on a global queue. The audio tap callback hops to `audioFileQueue` for file writes and to `DispatchQueue.main` to update published properties and hand PCM16 chunks to a streaming provider.
+- `NSObject` subclasses do not get the default isolation, so `DeepgramStream` is explicitly `@MainActor`; its `URLSession` delivers delegate calls on `OperationQueue.main`, and the `nonisolated` delegate method uses `MainActor.assumeIsolated`.
 - `ContentView` keeps its async work in `@State` tasks (`transcriptionTask`, `refinementTask`, `toastTask`). Cancel the previous task before starting a new one, check `Task.isCancelled` after each `await`, and cancel all of them in `onDisappear`. Each task resets its in-flight flag in a `defer`, so cancellation (window closed, Clear pressed) never leaves the UI stuck.
 
 ### Persistence
 
 - Settings are `@Published` properties on `AppState` with `didSet` observers that write to `UserDefaults` (not `@AppStorage`). `init()` restores them with `_prop = Published(wrappedValue:)` so `didSet` does not fire. Follow this pattern for any new setting.
-- API keys are `@Published` too but persist to Keychain with a 0.5 s debounce. A one-time migration moves keys from UserDefaults to Keychain, guarded by the `keychainMigrationDone` flag. The OpenAI-compatible endpoint's `customAIAPIKey` is one of them and may legitimately stay empty; its `customAIBaseURL` and `customAIModel` are ordinary UserDefaults settings.
+- API keys are `@Published` too but persist to Keychain with a 0.5 s debounce. A one-time migration moves keys from UserDefaults to Keychain, guarded by the `keychainMigrationDone` flag. The OpenAI-compatible endpoint's `customAIAPIKey` is one of them and may legitimately stay empty; its `customAIBaseURL` and `customAIModel` are ordinary UserDefaults settings. `deepgramAPIKey` is a Keychain key too; `deepgramLanguageMode`, `deepgramKeyterms` and `deepgramLiveTranscript` are UserDefaults settings.
 - Enum raw values (`"gpt4o_transcribe"`, `"claude"`, `"cleanup"`, …) are stable persisted identifiers. `AppState.migrateEnumValues` maps the older display-string values; if you rename a raw value, add a mapping there.
 - History is in-memory only (`@Published var history`), capped at 50, newest first, not persisted across launches. `ContentView` tracks the current entry via `currentHistoryEntryID` (set on transcription and when a sidebar entry is loaded) and updates it in place when refinement finishes or an append recording lands. The sidebar is disabled while a result is in flight.
 
@@ -75,6 +78,7 @@ User taps Record → AudioRecorderService (AVAudioEngine → 16kHz mono 16-bit P
 - **Append mode** keeps `transcribedText` and appends `"\n" + newText`; a normal Record clears it first. **Abort** cancels in-flight tasks and restores `textBeforeRecording`. **Clear** cancels any in-flight transcription or refinement.
 - The Refine split button's menu triggers refinement with the chosen mode; the plain button, ⌥E, the `R` key and auto-refine use the mode from Settings (`appState.refinementMode`). Custom mode shows a prompt bar above the editor, and an empty custom prompt falls back to "Clean up this transcription."
 - Auto-copy on transcribe is skipped when auto-refine is on, because the refined text is copied instead.
+- **Live transcript** (Deepgram, `deepgramLiveTranscript` on): results fill `transcribedText` while recording (after `textBeforeRecording` in append mode), the interim tail dimmed via `liveDimmedLength`. The final text is built from `textBeforeRecording`, not the live `transcribedText`. While a live transcript finalizes the status says "Finalizing…" and the loading overlay is hidden.
 
 ### Event monitors
 
@@ -82,14 +86,16 @@ Bare-key shortcuts (key codes Space=49, A=0, R=15) and Escape (53) are handled b
 
 ## STT Providers
 
-Three backends via `STTProvider`:
+Four backends via `STTProvider`:
 1. **GPT-4o Transcribe** (`gpt-4o-transcribe`) — requires OpenAI API key
 2. **OpenAI Whisper** (`whisper-1`) — requires OpenAI API key
 3. **Local Whisper** — **default provider**. A multipart upload to a self-hosted server. Host, port, path and model are separate settings (defaults `100.91.237.44`, `8000`, `/api/transcribe`, `whisper-large-v3`). The default is the Whisperapy server on power-linux-4090: field `video`, `language` as a query parameter, `model` ignored. No auth header is sent. Installs still on the previous default host (`192.168.10.110`) are migrated to the new one at launch.
 
+4. **Deepgram Nova-3** (`deepgram`) — streams while recording (`STTProvider.isStreaming`). `DeepgramLanguageMode`: mixed Chinese + English (default, `language=multi&language_hint=zh&language_hint=en`; Nova-3 multi covers Mandarin since 2026-10-23), English (`en`) or Chinese (`zh`). Always `smart_format=true`; the stream adds `encoding=linear16&sample_rate=16000&channels=1&interim_results=true&endpointing=300`. Keyterms (comma- or newline-separated, 500 tokens total) are repeated `keyterm` items, with `+` encoded as `%2B`. The STT badge turns red when its key is missing.
+
 At launch, when Local Whisper is selected, `ContentView` GETs `http://<host>:<port>/health` (5s timeout). A failure sets `AppState.localWhisperHealthError`, which turns the STT badge red with the error as its tooltip. Settings' **Test Connection** (sends 1s of silence) sets or clears the same error, and editing the endpoint clears it.
 
-`sttLanguage` (ISO 639-1, default `en`) is sent to every provider: as a form field for OpenAI, and additionally as a query item for the local endpoint.
+`sttLanguage` (ISO 639-1, default `en`) is sent to every file-based provider (Deepgram uses `deepgramLanguageMode`): as a form field for OpenAI, and additionally as a query item for the local endpoint.
 
 ## AI Providers
 
@@ -119,7 +125,7 @@ Four backends via `AIProvider`. `AIProvider.baseURL` includes the `/v1` prefix; 
 ## Conventions
 
 - **No Codable for API responses** — `STTService` and `AIService` parse JSON manually via `JSONSerialization`. Keep this consistent unless refactoring.
-- **Singletons for services** — `STTService.shared` and `AIService.shared`. `AudioRecorderService` is a `@StateObject` in `ContentView`.
-- **Errors** are nested `LocalizedError` enums per service (`STTError`, `AIError`, `RecorderError`); `ContentView` surfaces `localizedDescription` in an alert.
-- **Logging** — `print()` with prefixes: `[STT]`, `[AIService]`, `[Recorder]`, `[Keychain]`, `[History]`, `[Migration]`.
+- **Singletons for services** — `STTService.shared` and `AIService.shared`. `AudioRecorderService` is a `@StateObject` in `ContentView`. The exception is `DeepgramStream`: one instance per recording (its state belongs to that recording), held in `ContentView`'s `deepgramStream` `@State`.
+- **Errors** are nested `LocalizedError` enums per service (`STTError`, `AIError`, `RecorderError`, `DeepgramError`); `ContentView` surfaces `localizedDescription` in an alert.
+- **Logging** — `print()` with prefixes: `[STT]`, `[Deepgram]`, `[AIService]`, `[Recorder]`, `[Keychain]`, `[History]`, `[Migration]`.
 - **Entitlements**: App Sandbox, Audio Input, Outgoing Network (client), User-selected file read-write. `Info.plist` carries `NSMicrophoneUsageDescription`.

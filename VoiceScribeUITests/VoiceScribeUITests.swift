@@ -117,6 +117,31 @@ final class VoiceScribeUITests: XCTestCase {
         XCTAssertTrue("undo me".hasPrefix(afterUndo))
     }
 
+    /// Selects Deepgram with a launch argument: argument-domain defaults are never written back,
+    /// so the user's own provider stays selected. Test Connection is not pressed (it would use the key).
+    @MainActor
+    func testDeepgramShowsItsBadgeAndOwnSettings() throws {
+        app.terminate()
+        app.launchArguments = ["-sttProvider", "deepgram"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Deepgram Nova-3"].waitForExistence(timeout: 10), "status bar badge")
+
+        app.typeKey(",", modifierFlags: .command)
+        let transcriptionTab = app.toolbars.buttons["Transcription"]
+        XCTAssertTrue(transcriptionTab.waitForExistence(timeout: 5))
+        transcriptionTab.click()
+
+        // A grouped Form draws the toggle as a switch with its label as separate text.
+        XCTAssertTrue(app.staticTexts["Show live transcript while recording"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.switches.firstMatch.exists)
+        XCTAssertTrue(app.textFields["Keyterms"].exists || app.staticTexts["Keyterms"].exists)
+        XCTAssertTrue(app.buttons["Test Connection"].exists)
+        XCTAssertTrue(app.staticTexts["Deepgram streaming — the text is ready the moment you stop"].exists)
+        XCTAssertFalse(app.staticTexts["ISO 639-1 code: en, zh, ja, etc."].exists,
+                       "Deepgram's language picker replaces the shared Language field")
+        app.typeKey("w", modifierFlags: .command)
+    }
+
     @MainActor
     func testBareKeysWithEmptyEditorDoNothingHarmful() throws {
         // With no content, A and R are no-ops (Space would record, so it is not pressed here).

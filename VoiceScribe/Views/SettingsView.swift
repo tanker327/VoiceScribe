@@ -9,6 +9,8 @@ struct SettingsView: View {
     @State private var modelCache: [AIProvider: [String]] = [:]
     @State private var isTestingSTT = false
     @State private var sttTestResult: Result<String, Error>?
+    @State private var isTestingDeepgram = false
+    @State private var deepgramTestResult: Result<String, Error>?
 
     var body: some View {
         TabView {
@@ -48,6 +50,13 @@ struct SettingsView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+
+            Section("Deepgram") {
+                SecureField("API Key", text: $appState.deepgramAPIKey, prompt: Text("Deepgram API key"))
+                Text("Used for Deepgram Nova-3 streaming transcription.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -62,7 +71,7 @@ struct SettingsView: View {
                     ForEach(STTProvider.allCases) { provider in
                         HStack {
                             Text(provider.displayName)
-                            if provider.requiresOpenAIKey && appState.openAIAPIKey.isEmpty {
+                            if !appState.isConfigured(provider) {
                                 Text("(No API key)")
                                     .font(.system(size: 10))
                                     .foregroundStyle(.red)
@@ -89,35 +98,7 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
 
-                    HStack {
-                        Button(action: testSTTEndpoint) {
-                            if isTestingSTT {
-                                ProgressView()
-                                    .scaleEffect(0.6)
-                                    .frame(width: 16, height: 16)
-                            } else {
-                                Label("Test Connection", systemImage: "network")
-                            }
-                        }
-                        .disabled(isTestingSTT)
-                        Spacer()
-                    }
-
-                    switch sttTestResult {
-                    case .success(let text):
-                        Label(text.isEmpty ? "Connected. The server accepted the test audio."
-                                           : "Connected. Server returned: \(text)",
-                              systemImage: "checkmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.green)
-                    case .failure(let error):
-                        Label(error.localizedDescription, systemImage: "xmark.octagon.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.red)
-                            .textSelection(.enabled)
-                    case nil:
-                        EmptyView()
-                    }
+                    connectionTestRow(isTesting: isTestingSTT, result: sttTestResult, action: testSTTEndpoint)
                 }
                 .onChange(of: appState.localWhisperEndpoint) {
                     // The old result no longer applies to the new settings.
@@ -126,11 +107,35 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Language") {
-                TextField("Language", text: $appState.sttLanguage, prompt: Text("en"))
-                Text("ISO 639-1 code: en, zh, ja, etc.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+            if appState.sttProvider == .deepgram {
+                Section("Deepgram") {
+                    Picker("Language", selection: $appState.deepgramLanguageMode) {
+                        ForEach(DeepgramLanguageMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    TextField("Keyterms", text: $appState.deepgramKeyterms,
+                              prompt: Text("Brewer, homelab, Kubernetes"), axis: .vertical)
+                        .lineLimit(1...4)
+                    Toggle("Show live transcript while recording", isOn: $appState.deepgramLiveTranscript)
+
+                    Text("Mixed mode understands Chinese and English in the same sentence. Keyterms (comma-separated, about 100 words in total) help with names and jargon. The live transcript dims the words Deepgram is still recognizing.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                    connectionTestRow(isTesting: isTestingDeepgram, result: deepgramTestResult, action: testDeepgram)
+                }
+                .onChange(of: [appState.deepgramAPIKey, appState.deepgramLanguageMode.rawValue, appState.deepgramKeyterms]) {
+                    // The old result no longer applies to the new settings.
+                    deepgramTestResult = nil
+                }
+            } else {
+                Section("Language") {
+                    TextField("Language", text: $appState.sttLanguage, prompt: Text("en"))
+                    Text("ISO 639-1 code: en, zh, ja, etc.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -345,7 +350,8 @@ struct SettingsView: View {
             do {
                 let text = try await STTService.shared.testLocalEndpoint(endpoint: endpoint, model: model, language: language)
                 print("[STT] Test succeeded: \(endpoint)")
-                sttTestResult = .success(text)
+                sttTestResult = .success(text.isEmpty ? "Connected. The server accepted the test audio."
+                                                      : "Connected. Server returned: \(text)")
                 appState.localWhisperHealthError = nil
             } catch {
                 print("[STT] Test failed: \(endpoint): \(error.localizedDescription)")
@@ -353,6 +359,25 @@ struct SettingsView: View {
                 appState.localWhisperHealthError = error.localizedDescription
             }
             isTestingSTT = false
+        }
+    }
+
+    private func testDeepgram() {
+        let apiKey = appState.deepgramAPIKey
+        let languageMode = appState.deepgramLanguageMode
+        let keyterms = appState.deepgramKeytermList
+
+        deepgramTestResult = nil
+        isTestingDeepgram = true
+        Task {
+            do {
+                try await DeepgramStream.testConnection(apiKey: apiKey, languageMode: languageMode, keyterms: keyterms)
+                deepgramTestResult = .success("Connected. Deepgram accepted the key and settings.")
+            } catch {
+                print("[Deepgram] Test failed: \(error.localizedDescription)")
+                deepgramTestResult = .failure(error)
+            }
+            isTestingDeepgram = false
         }
     }
 
@@ -367,6 +392,39 @@ struct SettingsView: View {
     }
 
     // MARK: - Helpers
+
+    /// A Test Connection button with the last result under it (the success value is the message).
+    @ViewBuilder
+    private func connectionTestRow(isTesting: Bool, result: Result<String, Error>?,
+                                   action: @escaping () -> Void) -> some View {
+        HStack {
+            Button(action: action) {
+                if isTesting {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                        .frame(width: 16, height: 16)
+                } else {
+                    Label("Test Connection", systemImage: "network")
+                }
+            }
+            .disabled(isTesting)
+            Spacer()
+        }
+
+        switch result {
+        case .success(let message):
+            Label(message, systemImage: "checkmark.circle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.green)
+        case .failure(let error):
+            Label(error.localizedDescription, systemImage: "xmark.octagon.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
+        case nil:
+            EmptyView()
+        }
+    }
 
     private func shortcutRow(_ key: String, _ desc: String) -> some View {
         HStack {

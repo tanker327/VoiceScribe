@@ -53,6 +53,9 @@ class AppState: ObservableObject {
     @Published var customAIAPIKey: String = "" {
         didSet { scheduleKeychainSave(key: "customAIAPIKey", value: customAIAPIKey) }
     }
+    @Published var deepgramAPIKey: String = "" {
+        didSet { scheduleKeychainSave(key: "deepgramAPIKey", value: deepgramAPIKey) }
+    }
 
     private var keychainSaveTimers: [String: DispatchWorkItem] = [:]
 
@@ -97,6 +100,29 @@ class AppState: ObservableObject {
     }
     @Published var sttLanguage: String = "en" {
         didSet { UserDefaults.standard.set(sttLanguage, forKey: "sttLanguage") }
+    }
+
+    // --- Deepgram (used when sttProvider == .deepgram) ---
+    /// Deepgram's own language setting: `multi` and the language hints mean nothing to the other providers.
+    @Published var deepgramLanguageMode: DeepgramLanguageMode = .mixedChineseEnglish {
+        didSet { UserDefaults.standard.set(deepgramLanguageMode.rawValue, forKey: "deepgramLanguageMode") }
+    }
+    /// Names and jargon to boost, separated by commas or new lines.
+    @Published var deepgramKeyterms: String = "" {
+        didSet { UserDefaults.standard.set(deepgramKeyterms, forKey: "deepgramKeyterms") }
+    }
+    /// On: the transcript fills in while you speak. Off: it appears only after Stop.
+    @Published var deepgramLiveTranscript: Bool = true {
+        didSet { UserDefaults.standard.set(deepgramLiveTranscript, forKey: "deepgramLiveTranscript") }
+    }
+
+    /// The keyterms field as Deepgram receives it: split on commas (ASCII or full-width) and new
+    /// lines, trimmed, empties dropped. Spaces stay: "customer service" is one phrase.
+    var deepgramKeytermList: [String] {
+        deepgramKeyterms
+            .components(separatedBy: CharacterSet.newlines.union(CharacterSet(charactersIn: ",，")))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     // --- AI Refinement Settings ---
@@ -173,6 +199,7 @@ class AppState: ObservableObject {
         _claudeAPIKey = Published(wrappedValue: KeychainHelper.load(key: "claudeAPIKey"))
         _xaiAPIKey = Published(wrappedValue: KeychainHelper.load(key: "xaiAPIKey"))
         _customAIAPIKey = Published(wrappedValue: KeychainHelper.load(key: "customAIAPIKey"))
+        _deepgramAPIKey = Published(wrappedValue: KeychainHelper.load(key: "deepgramAPIKey"))
 
         // Load settings from UserDefaults (using _prop to skip didSet)
         if let raw = defaults.string(forKey: "sttProvider"),
@@ -193,6 +220,14 @@ class AppState: ObservableObject {
         if let v = defaults.string(forKey: "localWhisperPath") { _localWhisperPath = Published(wrappedValue: v) }
         if let v = defaults.string(forKey: "localWhisperModel") { _localWhisperModel = Published(wrappedValue: v) }
         if let v = defaults.string(forKey: "sttLanguage") { _sttLanguage = Published(wrappedValue: v) }
+        if let raw = defaults.string(forKey: "deepgramLanguageMode"),
+           let val = DeepgramLanguageMode(rawValue: raw) {
+            _deepgramLanguageMode = Published(wrappedValue: val)
+        }
+        if let v = defaults.string(forKey: "deepgramKeyterms") { _deepgramKeyterms = Published(wrappedValue: v) }
+        if defaults.object(forKey: "deepgramLiveTranscript") != nil {
+            _deepgramLiveTranscript = Published(wrappedValue: defaults.bool(forKey: "deepgramLiveTranscript"))
+        }
 
         if let raw = defaults.string(forKey: "aiProvider"),
            let val = AIProvider(rawValue: raw) {
@@ -297,6 +332,21 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Whether the STT provider has the key it needs. Local Whisper sends no auth.
+    func isConfigured(_ provider: STTProvider) -> Bool {
+        Self.isConfigured(provider, openAIKey: openAIAPIKey, deepgramKey: deepgramAPIKey)
+    }
+
+    /// Takes the keys as arguments so the unit tests never have to set one: the Keychain they would
+    /// write to is the user's real one.
+    nonisolated static func isConfigured(_ provider: STTProvider, openAIKey: String, deepgramKey: String) -> Bool {
+        switch provider {
+        case .openAIWhisper, .gpt4oTranscribe: return !openAIKey.isEmpty
+        case .localWhisper: return true
+        case .deepgram: return !deepgramKey.isEmpty
+        }
+    }
+
     // MARK: - History Management
 
     func addHistoryEntry(_ entry: TranscriptionEntry) {
@@ -314,6 +364,7 @@ enum STTProvider: String, CaseIterable, Identifiable, Codable {
     case openAIWhisper    = "openai_whisper"
     case gpt4oTranscribe  = "gpt4o_transcribe"
     case localWhisper     = "local_whisper"
+    case deepgram         = "deepgram"
 
     var id: String { rawValue }
 
@@ -322,6 +373,7 @@ enum STTProvider: String, CaseIterable, Identifiable, Codable {
         case .openAIWhisper:   return "OpenAI Whisper"
         case .gpt4oTranscribe: return "GPT-4o Transcribe"
         case .localWhisper:    return "Local Whisper"
+        case .deepgram:        return "Deepgram Nova-3"
         }
     }
 
@@ -330,30 +382,75 @@ enum STTProvider: String, CaseIterable, Identifiable, Codable {
         case .openAIWhisper:   return "OpenAI Whisper API (whisper-1)"
         case .gpt4oTranscribe: return "GPT-4o audio transcription — best accuracy"
         case .localWhisper:    return "Self-hosted Whisper endpoint"
+        case .deepgram:        return "Deepgram streaming — the text is ready the moment you stop"
         }
     }
 
     /// The model string sent in the API request
-    var modelName: String {
+    nonisolated var modelName: String {
         switch self {
         case .openAIWhisper:   return "whisper-1"
         case .gpt4oTranscribe: return "gpt-4o-transcribe"
         case .localWhisper:    return ""          // filled from settings
+        case .deepgram:        return "nova-3"
         }
     }
 
-    /// Base URL for the transcription endpoint
+    /// Base URL for the transcription endpoint. Deepgram's URL carries its settings as query
+    /// items, so `DeepgramStream.listenURL` builds it instead.
     func endpoint(localURL: String) -> String {
         switch self {
         case .openAIWhisper, .gpt4oTranscribe:
             return "https://api.openai.com/v1/audio/transcriptions"
         case .localWhisper:
             return localURL
+        case .deepgram:
+            return "wss://api.deepgram.com/v1/listen"
         }
     }
 
     var requiresOpenAIKey: Bool {
         self == .openAIWhisper || self == .gpt4oTranscribe
+    }
+
+    /// Streams audio while recording (`DeepgramStream`) instead of uploading the WAV after Stop.
+    var isStreaming: Bool {
+        self == .deepgram
+    }
+}
+
+// MARK: - Deepgram Language Mode
+
+/// What Deepgram listens for. Mixed mode is Nova-3's code-switching model, hinted toward the two
+/// languages so it does not mistake a short phrase for a third one.
+enum DeepgramLanguageMode: String, CaseIterable, Identifiable {
+    case mixedChineseEnglish = "multi_zh_en"
+    case english             = "en"
+    case chinese             = "zh"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .mixedChineseEnglish: return "Chinese + English (mixed)"
+        case .english:             return "English"
+        case .chinese:             return "Chinese (Mandarin)"
+        }
+    }
+
+    /// The `language` query item, plus `language_hint`s for the code-switching model (hints are
+    /// ignored with any other language). Nonisolated for `DeepgramStream.listenURL`.
+    nonisolated var queryItems: [URLQueryItem] {
+        switch self {
+        case .mixedChineseEnglish:
+            return [URLQueryItem(name: "language", value: "multi"),
+                    URLQueryItem(name: "language_hint", value: "zh"),
+                    URLQueryItem(name: "language_hint", value: "en")]
+        case .english:
+            return [URLQueryItem(name: "language", value: "en")]
+        case .chinese:
+            return [URLQueryItem(name: "language", value: "zh")]
+        }
     }
 }
 

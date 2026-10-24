@@ -8,10 +8,11 @@ Record your voice, transcribe with best-in-class STT, refine with AI, copy to cl
 
 ## Features
 
-- **Three STT backends** — configurable in Settings:
+- **Four STT backends** — configurable in Settings:
   - **GPT-4o Transcribe** — best accuracy (default)
   - **OpenAI Whisper API** — fast, reliable
   - **Local Whisper** — self-hosted, private (whisper.cpp server, faster-whisper, LocalAI, etc.)
+  - **Deepgram Nova-3** — streams while you record, so the text is ready right after Stop; mixed Chinese + English, keyterms, optional live transcript
 - **Four AI providers** — Claude (Anthropic), OpenAI, xAI (Grok), or any OpenAI-compatible endpoint (a self-hosted vLLM, llama.cpp, Ollama, LiteLLM or AI hub server) for post-processing
 - **Built-in text editor** — double-click to edit raw or refined text, Esc to finish, with word/character count
 - **One-click copy** to clipboard
@@ -27,7 +28,7 @@ Record your voice, transcribe with best-in-class STT, refine with AI, copy to cl
 
 - macOS 14.0 (Sonoma) or later
 - Xcode 15+
-- At least one API key (OpenAI for STT, Claude/OpenAI/xAI for refinement), or a local Whisper server plus an OpenAI-compatible endpoint for a fully self-hosted setup
+- At least one API key (OpenAI or Deepgram for STT, Claude/OpenAI/xAI for refinement), or a local Whisper server plus an OpenAI-compatible endpoint for a fully self-hosted setup
 
 ## Build & Run
 
@@ -48,10 +49,11 @@ VoiceScribe/
 ├── App/
 │   └── VoiceScribeApp.swift          # Entry point, window config
 ├── Models/
-│   └── AppState.swift                # State, enums (STTProvider, AIProvider, RefinementMode)
+│   └── AppState.swift                # State, enums (STTProvider, DeepgramLanguageMode, AIProvider, RefinementMode)
 ├── Services/
 │   ├── AudioRecorderService.swift    # AVAudioEngine → 16kHz WAV recording
 │   ├── STTService.swift              # Multipart upload to OpenAI / local Whisper
+│   ├── DeepgramStream.swift          # Deepgram Nova-3 live WebSocket + pre-recorded fallback
 │   ├── AIService.swift               # Claude, OpenAI, xAI & OpenAI-compatible endpoints
 │   └── KeychainHelper.swift          # Secure API key storage via macOS Keychain
 ├── Views/
@@ -67,6 +69,7 @@ VoiceScribe/
 ```
 Record → AudioRecorderService (AVAudioEngine → 16kHz mono PCM WAV)
   → STTService.transcribe() (multipart POST to OpenAI or local Whisper)
+    or DeepgramStream (audio streamed over a WebSocket while recording; final text right after Stop)
   → AppState.transcribedText
   → AIService.refine() (Claude, OpenAI, xAI, or an OpenAI-compatible endpoint)
   → AppState.refinedText → displayed in editor / copied to clipboard
@@ -98,6 +101,13 @@ docker run -p 8080:8080 localai/localai:latest
 ```
 
 In Settings > Transcription: select "Local Whisper", set the endpoint URL (e.g., `http://localhost:8080/v1/audio/transcriptions`).
+
+### Deepgram Nova-3
+- Get an API key from the [Deepgram Console](https://console.deepgram.com/)
+- Paste into **Settings > API Keys > Deepgram**
+- In **Settings > Transcription**, select "Deepgram Nova-3", then pick the language (Chinese + English mixed, English, or Chinese), add keyterms for names and jargon, and press **Test Connection**
+- With **Show live transcript** on, the text fills in while you speak; words still being recognized are dimmed
+- If the connection drops mid-recording, the recording is uploaded to Deepgram after Stop instead, so nothing is lost
 
 ## AI Refinement Setup
 
@@ -154,7 +164,7 @@ In Settings > Transcription: select "Local Whisper", set the endpoint URL (e.g.,
 
 ## Audio Format
 
-Records 16kHz, 16-bit mono PCM WAV — optimal for all Whisper variants and GPT-4o Transcribe.
+Records 16kHz, 16-bit mono PCM WAV — optimal for all Whisper variants and GPT-4o Transcribe. With Deepgram the same audio is also streamed live as raw 16-bit PCM (`linear16`); the WAV is kept as the upload fallback.
 
 ## License
 
