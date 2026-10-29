@@ -9,6 +9,7 @@ VoiceScribe is a **macOS SwiftUI app** for speech-to-text transcription with AI-
 - **Platform**: macOS 14.0+ (Sonoma). One main `Window` scene plus a `Settings` scene.
 - **Toolchain**: Swift / SwiftUI. The project enables `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` and `SWIFT_APPROACHABLE_CONCURRENCY`, so build with **Xcode 26 or newer** (the README's "Xcode 15+" is stale).
 - **Bundle ID**: `com.voicescribe.app.VoiceScribe`. Keychain service name: `com.voicescribe`.
+- **Version**: set only in the build settings, `MARKETING_VERSION` (1.1) and `CURRENT_PROJECT_VERSION` (build 2), in all six configurations; `Info.plist` reads them through `$(MARKETING_VERSION)` and `$(CURRENT_PROJECT_VERSION)`.
 - **No SPM dependencies** — all networking is raw `URLSession` / `URLRequest`. No linter or formatter is configured.
 
 ## Build & Run
