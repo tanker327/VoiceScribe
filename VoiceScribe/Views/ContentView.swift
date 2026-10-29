@@ -18,6 +18,12 @@ struct ContentView: View {
     @State private var transcriptionTask: Task<Void, Never>?
     @State private var refinementTask: Task<Void, Never>?
     @State private var toastTask: Task<Void, Never>?
+    /// The live connection of a recording with a streaming provider (Deepgram); nil otherwise.
+    @State private var deepgramStream: DeepgramStream?
+    /// How much of the editor's tail is a live interim result, drawn dimmed.
+    @State private var liveDimmedLength = 0
+    /// True while a click on the STT badge is testing the provider.
+    @State private var isCheckingSTT = false
     @State private var spaceKeyMonitor: Any?
     @State private var mouseMonitor: Any?
     @State private var hostWindow: NSWindow?
@@ -50,6 +56,7 @@ struct ContentView: View {
             transcriptionTask?.cancel()
             refinementTask?.cancel()
             toastTask?.cancel()
+            deepgramStream?.cancel()
             removeSpaceKeyMonitor()
             removeMouseMonitor()
         }
@@ -101,21 +108,26 @@ struct ContentView: View {
 
             Spacer()
 
-            // STT badge (red with a warning icon when the local server failed its health check)
-            let sttError = appState.sttProvider == .localWhisper ? appState.localWhisperHealthError : nil
-            HStack(spacing: 3) {
-                if sttError != nil {
-                    Image(systemName: "exclamationmark.triangle.fill")
+            // STT badge: red with a warning icon when the provider cannot work (the reason is the
+            // tooltip). Clicking it tests the connection again.
+            let sttError = sttProblem
+            Button(action: checkSTTConnection) {
+                HStack(spacing: 3) {
+                    if sttError != nil {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                    }
+                    Text(appState.sttProvider.displayName)
                 }
-                Text(appState.sttProvider.displayName)
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .foregroundStyle(sttError == nil ? Color.primary : Color.red)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background((sttError == nil ? Color.accentColor : Color.red).opacity(0.12))
+                .cornerRadius(4)
             }
-            .font(.system(size: 10, weight: .medium, design: .rounded))
-            .foregroundStyle(sttError == nil ? Color.primary : Color.red)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background((sttError == nil ? Color.accentColor : Color.red).opacity(0.12))
-            .cornerRadius(4)
-            .help(sttError.map { "Local Whisper is not reachable: \($0)" } ?? "")
+            .buttonStyle(.plain)
+            .help(sttError.map { "\($0)\nClick to test again." } ?? "Click to test the connection")
+            .accessibilityLabel(appState.sttProvider.displayName)
 
             Text(appState.aiProvider.displayName)
                 .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -140,20 +152,73 @@ struct ContentView: View {
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
+    /// Why the selected STT provider cannot work right now, shown as the badge's tooltip; nil when it can.
+    private var sttProblem: String? {
+        Self.sttProblem(appState.sttProvider, hasDeepgramKey: appState.isConfigured(.deepgram),
+                        localWhisperError: appState.localWhisperHealthError,
+                        deepgramError: appState.deepgramConnectionError)
+    }
+
+    /// A missing key outranks a failed check, because adding the key is the fix. Internal (not
+    /// private) for the unit tests.
+    nonisolated static func sttProblem(_ provider: STTProvider, hasDeepgramKey: Bool,
+                                       localWhisperError: String?, deepgramError: String?) -> String? {
+        switch provider {
+        case .localWhisper:
+            return localWhisperError.map { "Local Whisper is not reachable: \($0)" }
+        case .deepgram:
+            return hasDeepgramKey ? deepgramError : "No Deepgram API key. Set it in Settings → API Keys."
+        }
+    }
+
     /// Runs once at launch so a down or misconfigured local Whisper server shows on the badge
-    /// before the user records anything.
+    /// before the user records anything. Deepgram is not checked: that would use its quota.
     private func checkLocalWhisperHealth() {
         guard appState.sttProvider == .localWhisper else { return }
-        let url = appState.localWhisperHealthURL
+        Task { _ = await runConnectionCheck(.localWhisper) }
+    }
+
+    /// A click on the STT badge tests the selected provider again: Local Whisper's /health, or 1 s
+    /// of silence streamed to Deepgram. Ignored while recording, transcribing or refining, so their
+    /// status text stays.
+    private func checkSTTConnection() {
+        guard !isCheckingSTT, !appState.isRecording, !appState.isTranscribing, !appState.isRefining else { return }
+        let provider = appState.sttProvider
+        let checking = "Checking \(provider.displayName)…"
+        isCheckingSTT = true
+        appState.statusMessage = checking
         Task {
-            do {
-                try await STTService.shared.checkHealth(url: url)
-                appState.localWhisperHealthError = nil
-            } catch {
-                print("[STT] Local Whisper unhealthy: \(error.localizedDescription)")
-                appState.localWhisperHealthError = error.localizedDescription
+            let passed = await runConnectionCheck(provider)
+            isCheckingSTT = false
+            // Unless something else (a recording) has taken over the status text meanwhile.
+            if appState.statusMessage == checking {
+                appState.statusMessage = passed ? "\(provider.displayName) connected ✓" : "\(provider.displayName) check failed"
             }
         }
+    }
+
+    /// Tests the provider and stores the outcome where its badge reads it. Returns whether it passed.
+    private func runConnectionCheck(_ provider: STTProvider) async -> Bool {
+        var failure: String?
+        do {
+            switch provider {
+            case .localWhisper:
+                try await LocalWhisperService.shared.checkHealth(url: appState.localWhisperHealthURL)
+            case .deepgram:
+                try await DeepgramStream.testConnection(apiKey: appState.deepgramAPIKey,
+                                                        languageMode: appState.deepgramLanguageMode,
+                                                        keyterms: appState.deepgramKeytermList)
+            }
+            print("[STT] \(provider.displayName) check OK")
+        } catch {
+            print("[STT] \(provider.displayName) check failed: \(error.localizedDescription)")
+            failure = error.localizedDescription
+        }
+        switch provider {
+        case .localWhisper: appState.localWhisperHealthError = failure
+        case .deepgram:     appState.deepgramConnectionError = failure
+        }
+        return failure == nil
     }
 
     // MARK: - Custom Prompt Bar
@@ -187,8 +252,8 @@ struct ContentView: View {
                 placeholderView
             }
 
-            // Loading overlays
-            if appState.isTranscribing {
+            // Loading overlays. None over a live transcript that is finalizing: its text is the progress.
+            if appState.isTranscribing && !(deepgramStream != nil && appState.deepgramLiveTranscript) {
                 loadingOverlay(text: "Transcribing audio…", icon: "waveform")
             }
             if appState.isRefining {
@@ -233,7 +298,7 @@ struct ContentView: View {
                 .background(Color(nsColor: .controlBackgroundColor).opacity(0.25))
             }
 
-            editorField(text: $appState.transcribedText)
+            editorField(text: $appState.transcribedText, dimmedSuffixLength: liveDimmedLength)
         }
     }
 
@@ -562,14 +627,7 @@ struct ContentView: View {
         appState.refinedText = ""
         appState.showingRefined = false
         appState.transcribedText = ""
-
-        do {
-            try recorder.startRecording()
-            appState.isRecording = true
-            appState.statusMessage = "Recording…"
-        } catch {
-            showErrorAlert(error.localizedDescription)
-        }
+        startRecorder(status: "Recording…")
     }
 
     private func startAppendRecording() {
@@ -579,26 +637,70 @@ struct ContentView: View {
         textBeforeRecording = appState.transcribedText
         appState.refinedText = ""
         appState.showingRefined = false
+        startRecorder(status: "Recording (append)…")
+    }
 
+    /// Starts the microphone. Deepgram also gets its connection, which receives the audio as it is
+    /// recorded; a missing key fails here, before anything starts.
+    private func startRecorder(status: String) {
         do {
-            try recorder.startRecording()
+            let stream = appState.sttProvider == .deepgram ? try makeDeepgramStream() : nil
+            try recorder.startRecording(onPCM16Chunk: stream?.send)
+            stream?.connect()
+            deepgramStream = stream
+            liveDimmedLength = 0
             appState.isRecording = true
-            appState.statusMessage = "Recording (append)…"
+            appState.statusMessage = status
         } catch {
             showErrorAlert(error.localizedDescription)
         }
     }
 
+    private func makeDeepgramStream() throws -> DeepgramStream {
+        let stream = try DeepgramStream(apiKey: appState.deepgramAPIKey,
+                                        languageMode: appState.deepgramLanguageMode,
+                                        keyterms: appState.deepgramKeytermList)
+        stream.onUpdate = { transcript in showLiveTranscript(transcript) }
+        stream.onRejected = { error in
+            // A bad key or setting: nothing recorded from here on could be transcribed.
+            abortRecording()
+            showErrorAlert(error.localizedDescription)
+        }
+        return stream
+    }
+
+    /// Shows a Deepgram transcript as it arrives (live mode): finished words in the normal color,
+    /// the ones still being recognized dimmed.
+    private func showLiveTranscript(_ transcript: TranscriptAccumulator) {
+        guard appState.deepgramLiveTranscript else { return }
+        appState.transcribedText = recordedText(transcript.text)
+        liveDimmedLength = transcript.interimLength
+    }
+
+    private func recordedText(_ newText: String) -> String {
+        Self.recordedText(newText, after: textBeforeRecording, appending: isAppendMode)
+    }
+
+    /// The editor text once `newText` is recorded: on a new line after the earlier text in append
+    /// mode, on its own otherwise. Internal (not private) for the unit tests.
+    nonisolated static func recordedText(_ newText: String, after earlier: String, appending: Bool) -> String {
+        guard appending, !earlier.isEmpty else { return newText }
+        return newText.isEmpty ? earlier : earlier + "\n" + newText
+    }
+
     private func stopAndTranscribe() {
         guard let audioURL = recorder.stopRecording() else {
+            deepgramStream?.cancel()
+            deepgramStream = nil
             appState.isRecording = false
             appState.statusMessage = "No audio captured"
             return
         }
 
+        let stream = deepgramStream
         appState.isRecording = false
         appState.isTranscribing = true
-        appState.statusMessage = "Transcribing…"
+        appState.statusMessage = stream == nil ? "Transcribing…" : "Finalizing…"
 
         transcriptionTask?.cancel()
         transcriptionTask = Task {
@@ -608,20 +710,27 @@ struct ContentView: View {
                 isAppendMode = false
                 appState.isTranscribing = false
                 recorder.cleanupTempFile()
+                liveDimmedLength = 0
+                if deepgramStream === stream { deepgramStream = nil }
             }
             do {
-                let text = try await STTService.shared.transcribe(
-                    fileURL: audioURL,
-                    provider: appState.sttProvider,
-                    apiKey: appState.openAIAPIKey,
-                    localEndpoint: appState.localWhisperEndpoint,
-                    localModel: appState.localWhisperModel,
-                    language: appState.sttLanguage
-                )
+                let text: String
+                if let stream {
+                    // The WAV recorded alongside the stream is the fallback if the stream failed.
+                    text = try await stream.finish(fallbackFile: audioURL)
+                } else {
+                    text = try await LocalWhisperService.shared.transcribe(
+                        fileURL: audioURL,
+                        endpoint: appState.localWhisperEndpoint,
+                        model: appState.localWhisperModel,
+                        language: appState.sttLanguage
+                    )
+                }
                 guard !Task.isCancelled else { return }
 
-                if isAppendMode && !appState.transcribedText.isEmpty {
-                    appState.transcribedText += "\n" + text
+                // From textBeforeRecording, not transcribedText: a live transcript is already in the editor.
+                if isAppendMode && !textBeforeRecording.isEmpty {
+                    appState.transcribedText = recordedText(text)
                     // Update existing history entry with appended text
                     if let entryID = currentHistoryEntryID,
                        let idx = appState.history.firstIndex(where: { $0.id == entryID }) {
@@ -630,11 +739,7 @@ struct ContentView: View {
                 } else {
                     appState.transcribedText = text
                     // Create a new history entry immediately
-                    let entry = TranscriptionEntry(
-                        rawText: text,
-                        mode: appState.refinementMode,
-                        sttProvider: appState.sttProvider
-                    )
+                    let entry = TranscriptionEntry(rawText: text, mode: appState.refinementMode)
                     appState.addHistoryEntry(entry)
                     currentHistoryEntryID = entry.id
                 }
@@ -742,6 +847,9 @@ struct ContentView: View {
         // or overwrite the clipboard. The tasks' defer blocks also reset these flags.
         transcriptionTask?.cancel()
         refinementTask?.cancel()
+        deepgramStream?.cancel()
+        deepgramStream = nil
+        liveDimmedLength = 0
         endEditing()
         appState.isTranscribing = false
         appState.isRefining = false
@@ -805,6 +913,9 @@ struct ContentView: View {
     private func abortRecording() {
         transcriptionTask?.cancel()
         refinementTask?.cancel()
+        deepgramStream?.cancel()
+        deepgramStream = nil
+        liveDimmedLength = 0
         _ = recorder.stopRecording()
         recorder.cleanupTempFile()
         appState.isRecording = false
@@ -817,12 +928,13 @@ struct ContentView: View {
 
     // MARK: - Editor Field
 
-    private func editorField(text: Binding<String>) -> some View {
+    private func editorField(text: Binding<String>, dimmedSuffixLength: Int = 0) -> some View {
         TranscriptEditor(
             text: text,
             isEditing: $isEditingText,
             isEnabled: !appState.isRecording,
-            fontSize: CGFloat(appState.fontSize)
+            fontSize: CGFloat(appState.fontSize),
+            dimmedSuffixLength: dimmedSuffixLength
         )
         .overlay {
             if isEditingText {

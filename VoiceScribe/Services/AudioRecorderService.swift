@@ -71,8 +71,9 @@ class AudioRecorderService: ObservableObject {
 
     // MARK: - Public API
 
-    /// Start recording to a temp WAV file.
-    func startRecording() throws {
+    /// Start recording to a temp WAV file. A streaming provider also passes `onPCM16Chunk`, which
+    /// gets each tap buffer as 16 kHz mono 16-bit little-endian PCM, on the main queue, in order.
+    func startRecording(onPCM16Chunk: (@MainActor (Data) -> Void)? = nil) throws {
         guard !isRecording else {
             print("[Recorder] Already recording, ignoring startRecording()")
             return
@@ -121,6 +122,11 @@ class AudioRecorderService: ObservableObject {
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
             guard let self,
                   let convertedBuffer = Self.downsample(buffer, with: converter, to: desiredFormat) else { return }
+
+            if let onPCM16Chunk {
+                let chunk = Self.pcm16Data(from: convertedBuffer)
+                DispatchQueue.main.async { onPCM16Chunk(chunk) }
+            }
 
             // Write to file on a serial queue (async to avoid blocking the audio thread)
             self.audioFileQueue.async {
@@ -220,6 +226,22 @@ class AudioRecorderService: ObservableObject {
 
         guard error == nil, converted.frameLength > 0 else { return nil }
         return converted
+    }
+
+    /// The first channel as 16-bit little-endian PCM (`linear16`), the format streamed to
+    /// Deepgram. Samples beyond ±1 are clipped.
+    nonisolated static func pcm16Data(from buffer: AVAudioPCMBuffer) -> Data {
+        guard let samples = buffer.floatChannelData?[0] else { return Data() }
+        let count = Int(buffer.frameLength)
+        var data = Data(count: count * MemoryLayout<Int16>.size)
+        data.withUnsafeMutableBytes { raw in
+            let out = raw.bindMemory(to: Int16.self)
+            for i in 0..<count {
+                let clipped = max(-1, min(1, samples[i]))
+                out[i] = Int16(clipped * Float(Int16.max)).littleEndian
+            }
+        }
+        return data
     }
 
     /// Root-mean-square level of the first channel; 0 for an empty buffer.

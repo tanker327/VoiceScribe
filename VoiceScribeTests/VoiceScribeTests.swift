@@ -109,6 +109,21 @@ struct AudioDownsamplingTests {
         #expect(produced.last ?? 0 > 0.9)
     }
 
+    @Test func pcm16IsLittleEndianAndClipped() throws {
+        let format = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 5))
+        buffer.frameLength = 5
+        for (i, sample) in [Float(0), 1, -1, 2, 0.5].enumerated() { buffer.floatChannelData![0][i] = sample }
+
+        let data = AudioRecorderService.pcm16Data(from: buffer)
+        #expect(data.count == 10)
+        let samples = data.withUnsafeBytes { raw in
+            (0..<5).map { Int16(littleEndian: raw.loadUnaligned(fromByteOffset: $0 * 2, as: Int16.self)) }
+        }
+        #expect(samples == [0, 32_767, -32_767, 32_767, 16_383], "2.0 is clipped to full scale")
+        #expect(Array(data[2..<4]) == [0xFF, 0x7F], "low byte first")
+    }
+
     @Test func rmsOfSilenceIsZeroAndOfFullScaleIsOne() throws {
         let format = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false))
         let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 160))
@@ -119,31 +134,23 @@ struct AudioDownsamplingTests {
     }
 }
 
-// MARK: - STTService request URL
+// MARK: - LocalWhisperService request URL
 
-struct STTRequestURLTests {
+struct LocalWhisperRequestURLTests {
 
     @Test func localEndpointGetsLanguageQueryItem() throws {
-        let url = try STTService.requestURL(endpoint: "http://192.168.10.7:8000/api/transcribe",
-                                            provider: .localWhisper, language: "en")
+        let url = try LocalWhisperService.requestURL(endpoint: "http://192.168.10.7:8000/api/transcribe", language: "en")
         #expect(url.absoluteString == "http://192.168.10.7:8000/api/transcribe?language=en")
     }
 
     @Test func localEndpointWithoutLanguageIsUnchanged() throws {
-        let url = try STTService.requestURL(endpoint: "http://192.168.10.7:8000/api/transcribe",
-                                            provider: .localWhisper, language: "")
+        let url = try LocalWhisperService.requestURL(endpoint: "http://192.168.10.7:8000/api/transcribe", language: "")
         #expect(url.absoluteString == "http://192.168.10.7:8000/api/transcribe")
     }
 
-    @Test func openAIEndpointKeepsLanguageOutOfTheQuery() throws {
-        let url = try STTService.requestURL(endpoint: "https://api.openai.com/v1/audio/transcriptions",
-                                            provider: .gpt4oTranscribe, language: "en")
-        #expect(url.absoluteString == "https://api.openai.com/v1/audio/transcriptions")
-    }
-
     @Test func invalidEndpointThrows() {
-        #expect(throws: STTService.STTError.self) {
-            try STTService.requestURL(endpoint: "http://:8000", provider: .localWhisper, language: "en")
+        #expect(throws: LocalWhisperService.STTError.self) {
+            try LocalWhisperService.requestURL(endpoint: "http://:8000", language: "en")
         }
     }
 }
@@ -289,6 +296,7 @@ struct TranscriptEditorTests {
         var isEditing = false
         var isEnabled = true
         var fontSize: CGFloat = 16
+        var dimmedSuffixLength = 0
         init(text: String) { self.text = text }
     }
 
@@ -297,7 +305,8 @@ struct TranscriptEditorTests {
             text: Binding(get: { model.text }, set: { model.text = $0 }),
             isEditing: Binding(get: { model.isEditing }, set: { model.isEditing = $0 }),
             isEnabled: model.isEnabled,
-            fontSize: model.fontSize)
+            fontSize: model.fontSize,
+            dimmedSuffixLength: model.dimmedSuffixLength)
     }
 
     private func makeHost(_ model: Model) throws -> (NSWindow, NSHostingView<TranscriptEditor>, TranscriptTextView) {
@@ -404,6 +413,51 @@ struct TranscriptEditorTests {
         #expect(!textView.isEditable)
     }
 
+    @Test func liveInterimTailIsDimmedUntilItTurnsFinal() throws {
+        let model = Model(text: "Hello world")
+        model.dimmedSuffixLength = 6   // " world" is still being recognized
+        let (window, host, textView) = try makeHost(model)
+        defer { window.close() }
+        let storage = try #require(textView.textStorage)
+        let color = { (index: Int) in storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor }
+        #expect(color(0) != .secondaryLabelColor)
+        #expect(color(6) == .secondaryLabelColor)
+
+        model.dimmedSuffixLength = 0   // the same words came back final
+        update(host, with: model)
+        #expect(textView.string == "Hello world")
+        #expect(color(6) != .secondaryLabelColor)
+    }
+
+    private func clipView(of textView: NSTextView) throws -> NSClipView {
+        try #require(textView.enclosingScrollView?.contentView)
+    }
+
+    private let longText = (1...200).map { "line \($0)" }.joined(separator: "\n")
+
+    @Test func textArrivingWhileRecordingScrollsToTheNewestWords() throws {
+        let model = Model(text: "")
+        model.isEnabled = false   // recording
+        let (window, host, textView) = try makeHost(model)
+        defer { window.close() }
+
+        model.text = longText
+        update(host, with: model)
+        let clip = try clipView(of: textView)
+        #expect(clip.bounds.minY > 0)
+        #expect(clip.bounds.maxY >= textView.frame.maxY - 1, "the last line is in view")
+    }
+
+    @Test func otherReplacementsKeepTheScrollPosition() throws {
+        let model = Model(text: "")
+        let (window, host, textView) = try makeHost(model)
+        defer { window.close() }
+
+        model.text = longText   // a history entry loaded, not a live transcript
+        update(host, with: model)
+        #expect(try clipView(of: textView).bounds.minY == 0)
+    }
+
     @Test func losingFocusEndsEditing() async throws {
         let model = Model(text: "hello")
         model.isEditing = true
@@ -419,12 +473,12 @@ struct TranscriptEditorTests {
     }
 }
 
-// MARK: - STTService test audio
+// MARK: - LocalWhisperService test audio
 
-struct STTSilentWAVTests {
+struct LocalWhisperSilentWAVTests {
 
     @Test func silentWAVIsAValid16kHzMonoPCMFile() throws {
-        let wav = STTService.silentWAV(seconds: 1)
+        let wav = LocalWhisperService.silentWAV(seconds: 1)
         #expect(wav.count == 44 + 32_000)
         #expect(String(decoding: wav.prefix(4), as: UTF8.self) == "RIFF")
 
@@ -462,8 +516,342 @@ struct LocalWhisperHealthTests {
     }
 
     @Test func blankHostFailsBeforeAnyRequest() async {
-        await #expect(throws: STTService.STTError.self) {
-            try await STTService.shared.checkHealth(url: "http://:8000/health")
+        await #expect(throws: LocalWhisperService.STTError.self) {
+            try await LocalWhisperService.shared.checkHealth(url: "http://:8000/health")
         }
+    }
+}
+
+// MARK: - Deepgram request URLs
+
+@MainActor
+struct DeepgramURLTests {
+
+    private func values(_ name: String, in url: URL) -> [String] {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        return items.filter { $0.name == name }.compactMap(\.value)
+    }
+
+    @Test func streamingURLDescribesTheRawAudioAndAsksForInterimResults() {
+        let url = DeepgramStream.listenURL(streaming: true, languageMode: .english, keyterms: [])
+        #expect(url.absoluteString.hasPrefix("wss://api.deepgram.com/v1/listen?"))
+        let expected = [("model", "nova-3"), ("language", "en"), ("smart_format", "true"),
+                        ("encoding", "linear16"), ("sample_rate", "16000"), ("channels", "1"),
+                        ("interim_results", "true"), ("endpointing", "300")]
+        for (name, value) in expected {
+            #expect(values(name, in: url) == [value], "\(name)")
+        }
+        #expect(values("language_hint", in: url).isEmpty, "hints only apply to language=multi")
+    }
+
+    @Test func mixedModeIsTheCodeSwitchingModelHintedToChineseAndEnglish() {
+        let url = DeepgramStream.listenURL(streaming: true, languageMode: .mixedChineseEnglish, keyterms: [])
+        #expect(values("language", in: url) == ["multi"])
+        #expect(values("language_hint", in: url) == ["zh", "en"])
+    }
+
+    @Test func chineseModeIsMonolingual() {
+        let url = DeepgramStream.listenURL(streaming: true, languageMode: .chinese, keyterms: [])
+        #expect(values("language", in: url) == ["zh"])
+        #expect(values("language_hint", in: url).isEmpty)
+    }
+
+    @Test func preRecordedURLLeavesOutTheStreamingOptions() {
+        let url = DeepgramStream.listenURL(streaming: false, languageMode: .mixedChineseEnglish, keyterms: ["Brewer"])
+        #expect(url.absoluteString.hasPrefix("https://api.deepgram.com/v1/listen?"))
+        for name in ["encoding", "sample_rate", "channels", "interim_results", "endpointing"] {
+            #expect(values(name, in: url).isEmpty, "\(name)")
+        }
+        #expect(values("language", in: url) == ["multi"])
+        #expect(values("keyterm", in: url) == ["Brewer"])
+    }
+
+    @Test func keytermsAreRepeatedAndPercentEncoded() {
+        let url = DeepgramStream.listenURL(streaming: true, languageMode: .english,
+                                           keyterms: ["Brewer", "customer service", "C++"])
+        #expect(values("keyterm", in: url) == ["Brewer", "customer service", "C++"])
+        let query = url.query(percentEncoded: true) ?? ""
+        #expect(query.contains("keyterm=customer%20service"))
+        #expect(query.contains("keyterm=C%2B%2B"), "a bare + would reach Deepgram as a space")
+    }
+}
+
+// MARK: - Deepgram message parsing
+
+@MainActor
+struct DeepgramParsingTests {
+
+    @Test func interimAndFinalResults() {
+        let interim = #"{"type":"Results","is_final":false,"speech_final":false,"channel":{"alternatives":[{"transcript":"hello wor","confidence":0.9}]}}"#
+        #expect(DeepgramStream.parseEvent(interim) == .results(transcript: "hello wor", isFinal: false))
+        let final = #"{"type":"Results","is_final":true,"speech_final":true,"channel":{"alternatives":[{"transcript":"Hello world."}]}}"#
+        #expect(DeepgramStream.parseEvent(final) == .results(transcript: "Hello world.", isFinal: true))
+    }
+
+    @Test func resultsWithoutAnAlternativeAreEmpty() {
+        let json = #"{"type":"Results","is_final":true,"channel":{"alternatives":[]}}"#
+        #expect(DeepgramStream.parseEvent(json) == .results(transcript: "", isFinal: true))
+    }
+
+    @Test func metadataAndErrors() {
+        let metadata = #"{"type":"Metadata","request_id":"8c8ebea9","duration":3.2}"#
+        #expect(DeepgramStream.parseEvent(metadata) == .metadata(requestID: "8c8ebea9"))
+        let error = #"{"type":"Error","description":"Failed to decode audio.","message":"DATA-0000"}"#
+        #expect(DeepgramStream.parseEvent(error) == .error("Failed to decode audio."))
+    }
+
+    @Test func otherMessagesAreIgnored() {
+        #expect(DeepgramStream.parseEvent(#"{"type":"UtteranceEnd","last_word_end":2.4}"#) == .ignored("UtteranceEnd"))
+        #expect(DeepgramStream.parseEvent("not json") == .ignored("not JSON"))
+    }
+
+    @Test func preRecordedResponse() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "results": ["channels": [["alternatives": [["transcript": " 把 Brewer 的 pipeline 部署到 homelab。 "]]]]]
+        ])
+        #expect(try DeepgramStream.parsePrerecordedResponse(data) == "把 Brewer 的 pipeline 部署到 homelab。")
+        #expect(throws: DeepgramStream.DeepgramError.self) {
+            try DeepgramStream.parsePrerecordedResponse(Data(#"{"results":{"channels":[]}}"#.utf8))
+        }
+    }
+}
+
+// MARK: - Deepgram transcript accumulation
+
+@MainActor
+struct TranscriptAccumulatorTests {
+
+    @Test func interimIsReplacedAndFinalSegmentsAreAppended() {
+        var transcript = TranscriptAccumulator()
+        transcript.apply("hello", isFinal: false)
+        transcript.apply("hello wor", isFinal: false)
+        #expect(transcript.text == "hello wor")
+        #expect(transcript.committed.isEmpty)
+
+        transcript.apply("Hello world.", isFinal: true)
+        transcript.apply("how", isFinal: false)
+        #expect(transcript.text == "Hello world. how")
+        #expect(transcript.interimLength == 4, "the joining space is part of the dimmed tail")
+
+        transcript.apply("How are you?", isFinal: true)
+        #expect(transcript.text == "Hello world. How are you?")
+        #expect(transcript.interimLength == 0)
+    }
+
+    @Test func anEmptyFinalClearsTheInterim() {
+        var transcript = TranscriptAccumulator()
+        transcript.apply("Hello.", isFinal: true)
+        transcript.apply("um", isFinal: false)
+        transcript.apply("", isFinal: true)
+        #expect(transcript.text == "Hello.")
+    }
+
+    @Test func promotingTheInterimKeepsTheLastWords() {
+        var transcript = TranscriptAccumulator()
+        transcript.apply("Deploy it", isFinal: true)
+        transcript.apply("tonight", isFinal: false)
+        transcript.promoteInterim()
+        #expect(transcript.committed == "Deploy it tonight")
+        #expect(transcript.interim.isEmpty)
+    }
+
+    @Test(arguments: [("今天天气", "很好。", "今天天气很好。"),
+                      ("你好。", "谢谢", "你好。谢谢"),
+                      ("我们用", "Brewer", "我们用 Brewer"),
+                      ("Done.", "好的", "Done. 好的"),
+                      ("Hello", "world", "Hello world"),
+                      ("", "first", "first")])
+    func segmentsJoinWithASpaceExceptBetweenChineseCharacters(head: String, tail: String, joined: String) {
+        #expect(TranscriptAccumulator.join(head, tail) == joined)
+    }
+
+    @Test func interimLengthCountsUTF16LikeTheTextView() {
+        var transcript = TranscriptAccumulator()
+        transcript.apply("你好", isFinal: true)
+        transcript.apply("世界🌏", isFinal: false)
+        #expect(transcript.interimLength == ("世界🌏" as NSString).length)
+    }
+}
+
+// MARK: - Deepgram errors
+
+@MainActor
+struct DeepgramErrorTests {
+
+    private func response(_ status: Int, headers: [String: String] = [:]) throws -> HTTPURLResponse {
+        try #require(HTTPURLResponse(url: URL(string: "https://api.deepgram.com/v1/listen")!, statusCode: status,
+                                     httpVersion: "HTTP/1.1", headerFields: headers))
+    }
+
+    @Test func aRefusedKeyIsARejection() throws {
+        let error = DeepgramStream.connectionError(response: try response(401), underlying: URLError(.badServerResponse))
+        #expect(error.isRejection)
+        #expect(error.localizedDescription == "Deepgram rejected the API key (401). Check it in Settings → API Keys.")
+    }
+
+    @Test func aBadParameterShowsDeepgramsReason() throws {
+        let error = DeepgramStream.connectionError(response: try response(400, headers: ["dg-error": "Keyterm limit exceeded."]),
+                                                   underlying: URLError(.badServerResponse))
+        #expect(error.isRejection)
+        #expect(error.localizedDescription == "Deepgram API error (400): Keyterm limit exceeded.")
+    }
+
+    @Test func serverAndNetworkFailuresFallBackToTheRecording() throws {
+        let server = DeepgramStream.connectionError(response: try response(503), underlying: URLError(.badServerResponse))
+        #expect(!server.isRejection)
+        let offline = DeepgramStream.connectionError(response: nil, underlying: URLError(.notConnectedToInternet))
+        #expect(!offline.isRejection)
+        #expect(offline.localizedDescription.hasPrefix("Lost the connection to Deepgram"))
+    }
+
+    @Test func everyErrorReadsClearlyAndOnlyA4xxIsARejection() {
+        typealias E = DeepgramStream.DeepgramError
+        #expect(E.apiError(statusCode: 403, message: "").localizedDescription
+                == "Deepgram rejected the API key (403). Check it in Settings → API Keys.")
+        #expect(E.apiError(statusCode: 429, message: "Too many requests").isRejection)
+        #expect(E.connectionLost("the server closed the stream (1011 NET-0001)").localizedDescription
+                == "Lost the connection to Deepgram: the server closed the stream (1011 NET-0001).")
+        #expect(E.streamError("Failed to decode audio.").localizedDescription == "Deepgram error: Failed to decode audio.")
+        let notRejections: [E] = [.missingAPIKey, .connectionLost("x"), .streamError("x"), .invalidResponse, .parseError]
+        for error in notRejections {
+            #expect(!error.isRejection, "\(error)")
+            #expect(!(error.errorDescription ?? "").isEmpty)
+        }
+    }
+
+    @Test func aMissingKeyFailsBeforeAnyConnection() {
+        #expect(throws: DeepgramStream.DeepgramError.self) {
+            try DeepgramStream(apiKey: "", languageMode: .english, keyterms: [])
+        }
+    }
+}
+
+// MARK: - Deepgram settings
+
+@MainActor
+struct DeepgramSettingsTests {
+
+    @Test func keytermsSplitOnCommasAndNewLines() {
+        let state = AppState()
+        let saved = state.deepgramKeyterms
+        defer { state.deepgramKeyterms = saved }
+
+        state.deepgramKeyterms = " Brewer, homelab\ncustomer service，Kubernetes ,, \n"
+        #expect(state.deepgramKeytermList == ["Brewer", "homelab", "customer service", "Kubernetes"])
+    }
+
+    /// The stored raw values are persisted identifiers, like the other enums'.
+    @Test func languageModeRawValuesAreStable() {
+        #expect(DeepgramLanguageMode.allCases.map(\.rawValue) == ["multi_zh_en", "en", "zh"])
+    }
+
+    @Test func deepgramSettingsSurviveARelaunch() {
+        let state = AppState()
+        let saved = (state.deepgramLanguageMode, state.deepgramKeyterms, state.deepgramLiveTranscript)
+        defer {
+            state.deepgramLanguageMode = saved.0
+            state.deepgramKeyterms = saved.1
+            state.deepgramLiveTranscript = saved.2
+        }
+
+        state.deepgramLanguageMode = .chinese
+        state.deepgramKeyterms = "Brewer, homelab"
+        state.deepgramLiveTranscript = false
+        let relaunched = AppState()
+        #expect(relaunched.deepgramLanguageMode == .chinese)
+        #expect(relaunched.deepgramKeytermList == ["Brewer", "homelab"])
+        #expect(!relaunched.deepgramLiveTranscript)
+    }
+
+    /// Through the static seam: setting a key on AppState would write the user's real Keychain.
+    @Test func onlyDeepgramNeedsAKey() {
+        #expect(AppState.isConfigured(.localWhisper, deepgramKey: ""), "Local Whisper sends no key")
+        #expect(AppState.isConfigured(.deepgram, deepgramKey: "dg-1"))
+        #expect(!AppState.isConfigured(.deepgram, deepgramKey: ""))
+
+        let state = AppState()   // read only
+        #expect(state.isConfigured(.deepgram) == !state.deepgramAPIKey.isEmpty)
+    }
+}
+
+// MARK: - STT provider persistence
+
+@MainActor
+struct STTProviderPersistenceTests {
+
+    @Test func rawValuesAreStable() {
+        #expect(STTProvider.allCases.map(\.rawValue) == ["local_whisper", "deepgram"])
+    }
+
+    /// GPT-4o Transcribe and OpenAI Whisper were removed: a saved choice of either, by raw value or
+    /// by the older display name, comes back as Local Whisper and is rewritten.
+    @Test(arguments: ["gpt4o_transcribe", "openai_whisper", "GPT-4o Transcribe", "OpenAI Whisper"])
+    func removedProvidersFallBackToLocalWhisper(saved: String) {
+        let defaults = UserDefaults.standard
+        let original = defaults.string(forKey: "sttProvider")
+        defer { defaults.set(original, forKey: "sttProvider") }
+
+        defaults.set(saved, forKey: "sttProvider")
+        #expect(AppState().sttProvider == .localWhisper)
+        #expect(defaults.string(forKey: "sttProvider") == "local_whisper")
+    }
+
+    @Test func aSavedProviderSurvivesARelaunch() {
+        let defaults = UserDefaults.standard
+        let original = defaults.string(forKey: "sttProvider")
+        defer { defaults.set(original, forKey: "sttProvider") }
+
+        AppState().sttProvider = .deepgram
+        #expect(AppState().sttProvider == .deepgram)
+        AppState().sttProvider = .localWhisper
+        #expect(AppState().sttProvider == .localWhisper)
+    }
+
+    /// The Whisper server is reached over Tailscale, so its LAN addresses move to the Tailscale IP.
+    @Test func lanHostsMoveToTheTailscaleIP() {
+        #expect(AppState.migratedLocalWhisperHost("192.168.10.110") == "100.91.237.44", "the old default")
+        #expect(AppState.migratedLocalWhisperHost("192.168.10.7") == "100.91.237.44", "power-linux-4090 on the LAN")
+        #expect(AppState.migratedLocalWhisperHost("100.91.237.44") == "100.91.237.44")
+        #expect(AppState.migratedLocalWhisperHost("localhost") == "localhost", "a host the user chose is kept")
+    }
+}
+
+// MARK: - STT badge
+
+struct STTBadgeTests {
+
+    @Test func localWhisperShowsItsFailedCheck() {
+        #expect(ContentView.sttProblem(.localWhisper, hasDeepgramKey: false, localWhisperError: nil, deepgramError: "x") == nil,
+                "Deepgram's state does not affect Local Whisper")
+        #expect(ContentView.sttProblem(.localWhisper, hasDeepgramKey: true, localWhisperError: "timed out", deepgramError: nil)
+                == "Local Whisper is not reachable: timed out")
+    }
+
+    @Test func deepgramShowsAMissingKeyBeforeAFailedCheck() {
+        let noKey = "No Deepgram API key. Set it in Settings → API Keys."
+        #expect(ContentView.sttProblem(.deepgram, hasDeepgramKey: false, localWhisperError: "x", deepgramError: nil) == noKey)
+        #expect(ContentView.sttProblem(.deepgram, hasDeepgramKey: false, localWhisperError: nil, deepgramError: "rejected") == noKey)
+        #expect(ContentView.sttProblem(.deepgram, hasDeepgramKey: true, localWhisperError: "x", deepgramError: "rejected") == "rejected")
+        #expect(ContentView.sttProblem(.deepgram, hasDeepgramKey: true, localWhisperError: "x", deepgramError: nil) == nil)
+    }
+}
+
+
+// MARK: - Recorded text in the editor
+
+struct RecordedTextTests {
+
+    @Test func aNormalRecordingStandsOnItsOwn() {
+        #expect(ContentView.recordedText("new", after: "earlier", appending: false) == "new")
+    }
+
+    @Test func appendGoesOnANewLineAfterTheEarlierText() {
+        #expect(ContentView.recordedText("new", after: "earlier", appending: true) == "earlier\nnew")
+        #expect(ContentView.recordedText("new", after: "", appending: true) == "new")
+    }
+
+    @Test func anEmptyAppendLeavesTheEarlierTextAlone() {
+        // Also what a live transcript shows before the first words arrive.
+        #expect(ContentView.recordedText("", after: "earlier", appending: true) == "earlier")
     }
 }

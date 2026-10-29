@@ -8,17 +8,16 @@ Record your voice, transcribe with best-in-class STT, refine with AI, copy to cl
 
 ## Features
 
-- **Three STT backends** — configurable in Settings:
-  - **GPT-4o Transcribe** — best accuracy (default)
-  - **OpenAI Whisper API** — fast, reliable
-  - **Local Whisper** — self-hosted, private (whisper.cpp server, faster-whisper, LocalAI, etc.)
+- **Two STT backends** — configurable in Settings:
+  - **Local Whisper** — a self-hosted, private Whisperapy server (default)
+  - **Deepgram Nova-3** — streams while you record, so the text is ready right after Stop; mixed Chinese + English, keyterms, optional live transcript
 - **Four AI providers** — Claude (Anthropic), OpenAI, xAI (Grok), or any OpenAI-compatible endpoint (a self-hosted vLLM, llama.cpp, Ollama, LiteLLM or AI hub server) for post-processing
 - **Built-in text editor** — double-click to edit raw or refined text, Esc to finish, with word/character count
 - **One-click copy** to clipboard
 - **9 refinement modes** — Clean Up, Formal, Casual, Bullets, Email, Summary, Technical, Translate, Custom
 - **Keyboard shortcuts** — bare keys (Space, A, R) and Option-key combos for hands-free workflow
 - **History sidebar** — recall and delete past transcriptions
-- **Status bar** — shows active providers, input device, word/char count
+- **Status bar** — shows active providers, input device, word/char count; click the STT badge to test its connection (it turns red, with the reason as its tooltip, when the provider cannot work)
 - **Auto-refine** on stop, auto-copy on refine
 - **Append mode** — add to existing transcription without clearing
 - **Secure key storage** — API keys stored in macOS Keychain
@@ -27,7 +26,7 @@ Record your voice, transcribe with best-in-class STT, refine with AI, copy to cl
 
 - macOS 14.0 (Sonoma) or later
 - Xcode 15+
-- At least one API key (OpenAI for STT, Claude/OpenAI/xAI for refinement), or a local Whisper server plus an OpenAI-compatible endpoint for a fully self-hosted setup
+- For transcription, a local Whisper server or a Deepgram API key; for refinement, a Claude, OpenAI or xAI key, or an OpenAI-compatible endpoint (a local Whisper server plus a self-hosted endpoint is a fully self-hosted setup)
 
 ## Build & Run
 
@@ -48,10 +47,11 @@ VoiceScribe/
 ├── App/
 │   └── VoiceScribeApp.swift          # Entry point, window config
 ├── Models/
-│   └── AppState.swift                # State, enums (STTProvider, AIProvider, RefinementMode)
+│   └── AppState.swift                # State, enums (STTProvider, DeepgramLanguageMode, AIProvider, RefinementMode)
 ├── Services/
 │   ├── AudioRecorderService.swift    # AVAudioEngine → 16kHz WAV recording
-│   ├── STTService.swift              # Multipart upload to OpenAI / local Whisper
+│   ├── LocalWhisperService.swift     # Multipart upload to the local Whisper server
+│   ├── DeepgramStream.swift          # Deepgram Nova-3 live WebSocket + pre-recorded fallback
 │   ├── AIService.swift               # Claude, OpenAI, xAI & OpenAI-compatible endpoints
 │   └── KeychainHelper.swift          # Secure API key storage via macOS Keychain
 ├── Views/
@@ -66,7 +66,8 @@ VoiceScribe/
 
 ```
 Record → AudioRecorderService (AVAudioEngine → 16kHz mono PCM WAV)
-  → STTService.transcribe() (multipart POST to OpenAI or local Whisper)
+  → LocalWhisperService.transcribe() (multipart POST to local Whisper)
+    or DeepgramStream (audio streamed over a WebSocket while recording; final text right after Stop)
   → AppState.transcribedText
   → AIService.refine() (Claude, OpenAI, xAI, or an OpenAI-compatible endpoint)
   → AppState.refinedText → displayed in editor / copied to clipboard
@@ -74,30 +75,18 @@ Record → AudioRecorderService (AVAudioEngine → 16kHz mono PCM WAV)
 
 ## STT Provider Setup
 
-### GPT-4o Transcribe (recommended)
-- Get an API key from [OpenAI Platform](https://platform.openai.com/api-keys)
-- Paste into **Settings > API Keys > OpenAI API Key**
-- Select "GPT-4o Transcribe" as provider
-
-### OpenAI Whisper
-- Same API key as above
-- Select "OpenAI Whisper" as provider
-
 ### Local Whisper
-Run a Whisper server locally:
+- Expects a **Whisperapy** server: the audio is uploaded as the multipart field `video`, the language as a `language` query parameter, and the reply is `{"text": ...}` or plain text
+- Servers that expect the OpenAI-style field `file` (whisper.cpp server, faster-whisper-server, LocalAI) are not supported
+- In **Settings > Transcription**: select "Local Whisper", set the host, port, path and model (the defaults point at the Whisperapy server over Tailscale, `http://100.91.237.44:8000/api/transcribe`), and press **Test Connection**
+- At launch the app checks `http://<host>:<port>/health`; installs still on one of the server's LAN addresses (`192.168.10.110`, `192.168.10.7`) are moved to the Tailscale IP
 
-```bash
-# whisper.cpp server
-./server -m models/ggml-large-v3.bin --host 0.0.0.0 --port 8080
-
-# faster-whisper-server (Docker)
-docker run -d -p 8080:8000 fedirz/faster-whisper-server:latest
-
-# LocalAI
-docker run -p 8080:8080 localai/localai:latest
-```
-
-In Settings > Transcription: select "Local Whisper", set the endpoint URL (e.g., `http://localhost:8080/v1/audio/transcriptions`).
+### Deepgram Nova-3
+- Get an API key from the [Deepgram Console](https://console.deepgram.com/)
+- Paste into **Settings > API Keys > Deepgram**
+- In **Settings > Transcription**, select "Deepgram Nova-3", then pick the language (Chinese + English mixed, English, or Chinese), add keyterms for names and jargon, and press **Test Connection**
+- With **Show live transcript** on, the text fills in while you speak; words still being recognized are dimmed
+- If the connection drops mid-recording, the recording is uploaded to Deepgram after Stop instead, so nothing is lost
 
 ## AI Refinement Setup
 
@@ -107,7 +96,8 @@ In Settings > Transcription: select "Local Whisper", set the endpoint URL (e.g.,
 - Default model: `claude-sonnet-4-20250514`
 
 ### OpenAI
-- Uses the same API key from the STT setup
+- Get an API key from [OpenAI Platform](https://platform.openai.com/api-keys)
+- Paste into **Settings > API Keys > OpenAI**
 - Default model: `gpt-4o`
 
 ### xAI (Grok)
@@ -154,7 +144,7 @@ In Settings > Transcription: select "Local Whisper", set the endpoint URL (e.g.,
 
 ## Audio Format
 
-Records 16kHz, 16-bit mono PCM WAV — optimal for all Whisper variants and GPT-4o Transcribe.
+Records 16kHz, 16-bit mono PCM WAV — optimal for Whisper. With Deepgram the same audio is also streamed live as raw 16-bit PCM (`linear16`); the WAV is kept as the upload fallback.
 
 ## License
 

@@ -15,6 +15,9 @@ struct TranscriptEditor: NSViewRepresentable {
     /// False while recording: the text stays read-only and a double-click does nothing.
     var isEnabled: Bool
     var fontSize: CGFloat
+    /// UTF-16 length of the trailing text drawn in the secondary color: the words a live
+    /// transcript is still recognizing.
+    var dimmedSuffixLength: Int = 0
 
     private static let paragraphStyle: NSParagraphStyle = {
         let style = NSMutableParagraphStyle()
@@ -68,16 +71,28 @@ struct TranscriptEditor: NSViewRepresentable {
             textView.font = font   // plain-text view: restyles all text and future typing
         }
 
-        if textView.string != text {
+        let textChanged = textView.string != text
+        if textChanged {
             // A programmatic replacement (transcription landed, history loaded, Clear). Typing
             // never gets here because textDidChange already wrote the same string back.
             textView.string = text
-            if let storage = textView.textStorage {
-                storage.setAttributes(textView.typingAttributes,
-                                      range: NSRange(location: 0, length: storage.length))
-            }
             // The old undo actions refer to text that no longer exists.
             context.coordinator.undoManager.removeAllActions()
+        }
+        if textChanged || context.coordinator.dimmedSuffixLength != dimmedSuffixLength,
+           let storage = textView.textStorage {
+            context.coordinator.dimmedSuffixLength = dimmedSuffixLength
+            storage.setAttributes(textView.typingAttributes,
+                                  range: NSRange(location: 0, length: storage.length))
+            let dimmed = min(dimmedSuffixLength, storage.length)
+            if dimmed > 0 {
+                storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor,
+                                     range: NSRange(location: storage.length - dimmed, length: dimmed))
+            }
+        }
+        if textChanged && !isEnabled {
+            // A live transcript growing while recording: keep its newest words in view.
+            textView.scrollToEndOfDocument(nil)
         }
 
         textView.isEditable = isEditing && isEnabled
@@ -88,6 +103,8 @@ struct TranscriptEditor: NSViewRepresentable {
         /// The editor's own undo stack, so a programmatic text replacement can drop it without
         /// touching the window's other fields.
         let undoManager = UndoManager()
+        /// The dimmed length last applied, so an interim turning final restyles the same text.
+        var dimmedSuffixLength = 0
 
         init(_ parent: TranscriptEditor) {
             self.parent = parent
